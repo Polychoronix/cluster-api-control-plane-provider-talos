@@ -7,6 +7,7 @@ package controllers
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -206,6 +207,37 @@ func TestReconcileInPlaceUpdates_HoldsOthersWhileOneIsUpdating(t *testing.T) {
 	assert.ElementsMatch(t, []string{"machine-1"}, decision.claimed.Names())
 	assert.Empty(t, decision.rollout, "machines waiting for an in-place update in flight must not be rolled out")
 	assert.Zero(t, f.caller.calls, "no second machine is offered while one is updating")
+}
+
+// Desired specs are committed before the runtime hook completes. Such a Machine no
+// longer appears in outdated, but must still serialize all control plane work.
+func TestReconcileInPlaceUpdates_HoldsSpecMatchedTransaction(t *testing.T) {
+	for _, enabled := range []bool{true, false} {
+		for _, annotation := range []string{clusterv1.UpdateInProgressAnnotation, runtimev1.PendingHooksAnnotation} {
+			for _, allMatched := range []bool{false, true} {
+				t.Run(fmt.Sprintf("gate=%t/annotation=%s/allMatched=%t", enabled, annotation, allMatched), func(t *testing.T) {
+					utilfeature.SetFeatureGateDuringTest(t, feature.Gates, feature.InPlaceUpdates, enabled)
+					value := ""
+					if annotation == runtimev1.PendingHooksAnnotation {
+						value = "UpdateMachine"
+					}
+					f := newInPlaceFixture(t, map[string]string{annotation: value})
+					f.machine.Spec.Version = f.tcp.Spec.Version
+					second := f.addMachine("machine-2", nil)
+					if allMatched {
+						second.Spec.Version = f.tcp.Spec.Version
+					}
+					outdated := f.controlPlane.MachinesWithOutdatedRolloutSpec()
+					require.NotContains(t, outdated, f.machine.Name)
+					decision, err := f.reconciler.reconcileInPlaceUpdates(context.Background(), f.tcp, f.controlPlane, outdated)
+					require.NoError(t, err)
+					assert.ElementsMatch(t, []string{f.machine.Name}, decision.claimed.Names())
+					assert.Empty(t, decision.rollout, "a pending transaction must block replacement even after disabling the gate")
+					assert.Zero(t, f.caller.calls, "spec matching is not runtime completion")
+				})
+			}
+		}
+	}
 }
 
 // Nothing the extension could take (here: no node yet) goes to the rollout path, as it

@@ -1004,7 +1004,20 @@ func (r *TalosControlPlaneReconciler) reconcileMachineTemplateState(ctx context.
 func (r *TalosControlPlaneReconciler) reconcileMachines(ctx context.Context, cluster *clusterv1.Cluster, tcp *controlplanev1.TalosControlPlane, machines *clusterv1.MachineList) (res ctrl.Result, err error) {
 	logger := r.Log.WithValues("namespace", tcp.Namespace, "talosControlPlane", tcp.Name)
 
-	// If we've made it this far, we can assume that all ownedMachines are up to date
+	// The owner's spec writes precede runtime completion. Hold every Machine
+	// mutation, including scaling and replacement, until the core executor clears
+	// both transaction annotations. This also covers zero outdated Machines.
+	updating := collections.FromMachineList(machines).Filter(isUpdatingInPlace)
+	if len(updating) > 0 {
+		logger.Info("waiting for in-place transaction completion", "machines", updating.Names())
+		conditions.Set(tcp, metav1.Condition{
+			Type:    string(controlplanev1.MachinesSpecUpToDateCondition),
+			Status:  metav1.ConditionFalse,
+			Reason:  controlplanev1.InPlaceUpdateInProgressReason,
+			Message: fmt.Sprintf("Waiting for %d in-place transactions to complete", len(updating)),
+		})
+		return ctrl.Result{RequeueAfter: requeueDuration}, nil
+	}
 	numMachines := len(machines.Items)
 	desiredReplicas := int(tcp.Spec.GetReplicas())
 
@@ -1034,8 +1047,9 @@ func (r *TalosControlPlaneReconciler) reconcileMachines(ctx context.Context, clu
 			Type:    string(controlplanev1.MachinesSpecUpToDateCondition),
 			Status:  metav1.ConditionFalse,
 			Reason:  controlplanev1.InPlaceUpdateInProgressReason,
-			Message: fmt.Sprintf("Updating %d replicas with outdated spec in place (%d replicas up to date)", len(outdated), len(controlPlane.Machines)-len(outdated)),
+			Message: fmt.Sprintf("Updating %d replicas in place (%d replicas have outdated specs)", len(decision.claimed), len(outdated)),
 		})
+		return ctrl.Result{RequeueAfter: requeueDuration}, nil
 	}
 
 	needRollout := decision.rollout

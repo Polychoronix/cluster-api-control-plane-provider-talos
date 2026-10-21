@@ -75,27 +75,22 @@ func (r *TalosControlPlaneReconciler) reconcileInPlaceUpdates(
 ) (inPlaceDecision, error) {
 	decision := newInPlaceDecision()
 
+	// Desired specs are written before the runtime hook finishes, so an updating
+	// Machine may already match the desired spec. Scan the full control plane, and
+	// honor an existing transaction even if the gate or runtime client was disabled.
+	decision.claimed = controlPlane.Machines.Filter(isUpdatingInPlace)
+	if len(decision.claimed) > 0 {
+		return decision, nil
+	}
+
 	if !feature.Gates.Enabled(feature.InPlaceUpdates) || r.RuntimeClient == nil {
-		// Exactly the pre-in-place behaviour: everything outdated is rolled out.
 		decision.rollout = outdated
 
 		return decision, nil
 	}
 
-	// Machines already mid-update stay claimed so the rollout path leaves them alone until
-	// the core Machine controller clears the annotation.
-	for _, machine := range outdated {
-		if isUpdatingInPlace(machine) {
-			decision.claimed.Insert(machine)
-		}
-	}
-
-	// One control plane machine at a time. An in-place update can reboot the node (a Talos
-	// upgrade always does), so concurrent updates would risk etcd quorum. The remaining
-	// outdated Machines wait; they are offered again once this one has finished.
-	if len(decision.claimed) > 0 {
-		return decision, nil
-	}
+	// One control plane machine at a time. An in-place update can reboot the node
+	// (a Talos upgrade always does), so concurrent updates would risk etcd quorum.
 
 	candidate := r.nextInPlaceCandidate(controlPlane, outdated)
 	if candidate == nil {

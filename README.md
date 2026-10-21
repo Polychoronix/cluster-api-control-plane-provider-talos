@@ -300,6 +300,38 @@ named `talos-topology-control-plane`, and control plane machines named
 See `config/samples/topology_v1alpha3_clusterclass_with_taloscontrolplanetemplate.yaml` for a ClusterClass / Cluster fragment including workers.
 That sample assumes the referenced infrastructure and worker bootstrap templates already exist.
 
+### In-place update serialization
+
+Enable `RuntimeSDK=true,InPlaceUpdates=true` on core Cluster API and
+`InPlaceUpdates=true` on this control plane provider, with the matched Talos
+bootstrap runtime extension registered. The provider starts one control plane
+update at a time. Writing the desired Machine and bootstrap specs is **not**
+completion: while any control plane Machine carries the update-in-progress or
+pending `UpdateMachine` annotation, no other update, replacement, scale-up or
+scale-down starts. The hold also applies when every spec already matches, after
+an owner restart, or if the feature gate is disabled during an existing update.
+Do not remove these annotations to force advancement; only the core executor's
+completion handshake releases the hold.
+
+Talos reboot draining is separate from CAPI's Machine deletion drain and volume
+detach pipeline described below. In-place updates keep the Machine and
+InfraMachine; this serialization guarantee does not itself prove reboot recovery,
+image identity, storage health, or durable recovery of a partially written owner
+transaction. Those observations remain required before disruptive rollout testing.
+Physical wipe, including a Robot's original configuration seed, remains manual.
+
+The retained controller regression uses a disposable envtest API server/etcd and
+the real owner trigger with server-side apply. It leaves one hook pending with
+two control plane candidates and checks no second Machine/bootstrap/InfraMachine
+mutation or scale/replacement across gate-on/off, matching/outdated specs, owner
+restart and desired replica counts. It does not install providers into an ambient
+cluster or claim actual core runtime-hook execution:
+
+```sh
+KUBEBUILDER_ASSETS=<setup-envtest-binary-directory> go test ./controllers \
+  -run '^(TestReconcileInPlaceUpdates|TestPreflight_HoldsUpdatingMachineEvenWhenExcluded|TestInPlaceSerializationControllerEnvtest)' -count=1 -v
+```
+
 ### Machine deletion and etcd
 
 Control plane `Machine` deletion follows the Kubeadm Control Plane provider's pattern, on every
@@ -340,6 +372,7 @@ Like KCP, the provider runs preflight checks before creating or deleting a contr
 `Machine`. A scale operation waits while:
 
 - any control plane `Machine` is being deleted (one membership change at a time),
+- any control plane `Machine` has an in-place transaction pending or in progress,
 - any `Machine` has no `Node` yet,
 - a control plane component reports an unhealthy service, or
 - the `EtcdClusterHealthy` condition is not `True`.
