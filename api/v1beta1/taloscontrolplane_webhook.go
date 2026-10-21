@@ -130,6 +130,7 @@ func (r *TalosControlPlane) validate() field.ErrorList {
 	allErrs = append(allErrs, validateMachineNamingStrategy(r.Spec.MachineNamingStrategy, field.NewPath("spec", "machineNamingStrategy"))...)
 	allErrs = append(allErrs, validateRolloutStrategy(r.Spec.RolloutStrategy, field.NewPath("spec", "rolloutStrategy"))...)
 	allErrs = append(allErrs, validateControlPlaneConfig(&r.Spec.ControlPlaneConfig, field.NewPath("spec", "controlPlaneConfig"))...)
+	allErrs = append(allErrs, validateKubeconfig(r.Spec.Kubeconfig, field.NewPath("spec", "kubeconfig"))...)
 
 	return allErrs
 }
@@ -251,4 +252,13 @@ func newInvalidTalosControlPlaneError(kind, name string, allErrs field.ErrorList
 		name,
 		allErrs,
 	)
+}
+
+func validateKubeconfig(config KubeconfigSpec, path *field.Path) field.ErrorList {
+	switch config.Mode {
+	case "", KubeconfigModeManaged, KubeconfigModeExternal:
+		return nil
+	default:
+		return field.ErrorList{field.NotSupported(path.Child("mode"), config.Mode, []string{"Managed", "External"})}
+	}
 }

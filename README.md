@@ -188,7 +188,10 @@ Each patch must be passed as a YAML string, typically via a block scalar (`- |`)
 Note the generateType mentioned above.
 This is a required value in the spec for both controlplane and worker ("join") nodes.
 For a no-frills control plane config, you can simply specify `controlplane` depending on each config section.
-When creating a `TalosControlPlane` this way, you can retrieve the generated Talos client config from the corresponding `TalosConfig` object after creation, for example with `kubectl get talosconfig talos-cp-xxxx -o jsonpath='{.status.talosConfig}'`.
+Generated Talos client credentials are held only in the namespace-local
+`<cluster>-talosconfig` Secret, key `talosconfig`, not public `TalosConfig` status.
+Use an authorized private credential-handling workflow; never paste this Secret,
+full machine configuration or credential bytes into logs, chat or Git.
 
 If you wish to do something more complex, we allow for the ability to supply an entire Talos machine config file to the resource.
 This can be done by setting `controlPlaneConfig.controlplane.generateType` to `none` and specifying a `data` field.
@@ -299,6 +302,37 @@ named `talos-topology-control-plane`, and control plane machines named
 
 See `config/samples/topology_v1alpha3_clusterclass_with_taloscontrolplanetemplate.yaml` for a ClusterClass / Cluster fragment including workers.
 That sample assumes the referenced infrastructure and worker bootstrap templates already exist.
+
+### Externally managed Kubernetes kubeconfig
+
+Set `spec.kubeconfig.mode: External` on a `TalosControlPlane` (or
+`spec.template.spec.kubeconfig.mode` on its template) to retain an independently
+managed Kubernetes auth-proxy kubeconfig. The omitted/default mode is `Managed`.
+Both served control plane API versions preserve the setting.
+
+External mode consumes only the standard namespace-local `<cluster>-kubeconfig`
+Secret, key `value`; it never creates a replacement, takes ownership, rewrites
+labels/credentials, or attempts client-certificate rotation. The Secret's external
+owner must provide the matching `cluster.x-k8s.io/cluster-name` label required by
+the CAPI Cluster cache. Token and exec authentication do not need a Kubernetes
+client certificate. Supply valid HTTPS server/current-context configuration.
+Missing or invalid input reports `KubeconfigAvailable=False` using safe messages;
+Kubernetes API reachability is separately observed through `Available` and never
+inferred from successful kubeconfig parsing. Inspect metadata/conditions only:
+
+```sh
+kubectl get secret <cluster>-kubeconfig -n <namespace> \
+  -o custom-columns=NAME:.metadata.name,UID:.metadata.uid,OWNERS:.metadata.ownerReferences[*].name
+kubectl get taloscontrolplane <name> -n <namespace> \
+  -o jsonpath='{.status.conditions}'
+```
+
+For kissanpentu, retain `kissanpentu-kubeconfig` and its validated auth-proxy path.
+This is not an adoption guard: normal Machine/etcd lifecycle operations remain
+active. Keep the existing observer and do not transfer `controlPlaneRef` until an
+explicit guarded inventory/handoff is approved. Native Kubernetes TCP access or
+returning to Managed mode is a deliberate credentials/ownership migration, not a
+side effect of updating Talos management endpoints.
 
 ### In-place update serialization
 

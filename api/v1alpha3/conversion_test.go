@@ -167,3 +167,15 @@ func TestControlPlaneStatusConvertFromDerivesTheLegacyFields(t *testing.T) {
 	require.Nil(t, spoke.Status.FailureReason)
 	require.Equal(t, Conditions{{Type: "Available", Status: corev1.ConditionTrue, Reason: "Available", LastTransitionTime: transition}}, spoke.Status.Conditions)
 }
+
+func TestExternalKubeconfigSpecRoundTrip(t *testing.T) {
+	for _, mode := range []cpv1beta1.KubeconfigMode{"", cpv1beta1.KubeconfigModeManaged, cpv1beta1.KubeconfigModeExternal} {
+		hub := &cpv1beta1.TalosControlPlane{Spec: cpv1beta1.TalosControlPlaneSpec{Kubeconfig: cpv1beta1.KubeconfigSpec{Mode: mode}}}
+		spoke := &TalosControlPlane{}
+		require.NoError(t, spoke.ConvertFrom(hub))
+		require.Equal(t, string(mode), string(spoke.Spec.Kubeconfig.Mode))
+		back := &cpv1beta1.TalosControlPlane{}
+		require.NoError(t, spoke.ConvertTo(back))
+		require.Equal(t, hub.Spec.Kubeconfig, back.Spec.Kubeconfig)
+	}
+}

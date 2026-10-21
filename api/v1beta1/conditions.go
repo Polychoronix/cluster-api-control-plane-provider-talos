@@ -123,3 +123,9 @@ const (
 	// MachinesCreatedReason documents that the TalosControlPlane has successfully created all required machines.
 	MachinesCreatedReason = "MachinesCreated"
 )
+
+const (
+	// KubeconfigAvailableCondition reports validation of external Kubernetes access.
+	// API reachability is separately observed by the Available condition.
+	KubeconfigAvailableCondition = "KubeconfigAvailable"
+)

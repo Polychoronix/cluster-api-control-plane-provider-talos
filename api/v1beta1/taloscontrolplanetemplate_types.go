@@ -49,6 +49,10 @@ type TalosControlPlaneTemplateResourceSpec struct {
 	// +optional
 	// +kubebuilder:default={type: "RollingUpdate", rollingUpdate: {maxSurge: 1}}
 	RolloutStrategy *RolloutStrategy `json:"rolloutStrategy,omitempty"`
+
+	// Kubeconfig selects management of the standard Cluster kubeconfig Secret.
+	// +optional
+	Kubeconfig KubeconfigSpec `json:"kubeconfig,omitempty,omitzero"`
 }
 
 // TalosControlPlaneTemplateMachineTemplate is the MachineTemplate carried by a

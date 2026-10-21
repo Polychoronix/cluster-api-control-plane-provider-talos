@@ -199,6 +199,19 @@ spec:
                         required:
                         - controlplane
                         type: object
+                      kubeconfig:
+                        description: Kubeconfig selects management of the standard
+                          Cluster kubeconfig Secret.
+                        properties:
+                          mode:
+                            description: |-
+                              External validates and consumes the Secret without writing, owning or
+                              rotating its credentials. Omitted mode retains Managed behavior.
+                            enum:
+                            - Managed
+                            - External
+                            type: string
+                        type: object
                       machineNamingStrategy:
                         description: |-
                           MachineNamingStrategy allows changing the naming pattern used when creating control plane Machines.

@@ -210,6 +210,18 @@ spec:
                     type: string
                 type: object
                 x-kubernetes-map-type: atomic
+              kubeconfig:
+                description: Kubeconfig selects provider-managed or externally managed
+                  Kubernetes access.
+                properties:
+                  mode:
+                    description: External never writes, takes ownership of or rotates
+                      the supplied Secret.
+                    enum:
+                    - Managed
+                    - External
+                    type: string
+                type: object
               replicas:
                 description: |-
                   Number of desired machines. Defaults to 1. When stacked etcd is used only
@@ -606,6 +618,19 @@ spec:
                     type: object
                 required:
                 - controlplane
+                type: object
+              kubeconfig:
+                description: Kubeconfig selects provider-managed or externally managed
+                  Kubernetes access.
+                properties:
+                  mode:
+                    description: |-
+                      External validates and consumes the Secret without writing, owning or
+                      rotating its credentials. Omitted mode retains Managed behavior.
+                    enum:
+                    - Managed
+                    - External
+                    type: string
                 type: object
               machineNamingStrategy:
                 description: |-

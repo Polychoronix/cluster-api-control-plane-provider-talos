@@ -24,6 +24,23 @@ type ControlPlaneConfig struct {
 	ControlPlaneConfig cabptv1.TalosConfigSpec `json:"controlplane"`
 }
 
+// KubeconfigMode selects who owns the standard Cluster kubeconfig Secret.
+type KubeconfigMode string
+
+const (
+	KubeconfigModeManaged  KubeconfigMode = "Managed"
+	KubeconfigModeExternal KubeconfigMode = "External"
+)
+
+// KubeconfigSpec configures management of <cluster>-kubeconfig, key value.
+type KubeconfigSpec struct {
+	// External validates and consumes the Secret without writing, owning or
+	// rotating its credentials. Omitted mode retains Managed behavior.
+	// +optional
+	// +kubebuilder:validation:Enum=Managed;External
+	Mode KubeconfigMode `json:"mode,omitempty"`
+}
+
 // TalosControlPlaneMachineTemplate defines how control plane Machines should be shaped.
 // It mirrors the upstream Cluster API v1beta2 KubeadmControlPlane.MachineTemplate layout:
 // metadata + spec, where spec carries the infrastructure reference, readiness gates and
@@ -132,6 +149,10 @@ type TalosControlPlaneSpec struct {
 	// +optional
 	// +kubebuilder:default={type: "RollingUpdate", rollingUpdate: {maxSurge: 1}}
 	RolloutStrategy *RolloutStrategy `json:"rolloutStrategy,omitempty"`
+
+	// Kubeconfig selects provider-managed or externally managed Kubernetes access.
+	// +optional
+	Kubeconfig KubeconfigSpec `json:"kubeconfig,omitempty,omitzero"`
 }
 
 // GetReplicas reads spec replicas in a safe way.

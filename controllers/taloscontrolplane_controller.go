@@ -745,11 +745,19 @@ func (r *TalosControlPlaneReconciler) updateStatus(ctx context.Context, tcp *con
 	tcp.Status.UpToDateReplicas = ptr.To(upToDateReplicas)
 	tcp.Status.ReadyReplicas = readyReplicas
 
+	if tcp.Spec.Kubeconfig.Mode == controlplanev1.KubeconfigModeExternal {
+		conditions.Set(tcp, metav1.Condition{Type: string(controlplanev1.AvailableCondition), Status: metav1.ConditionFalse, Reason: "ExternalKubernetesAPIUnreachable", Message: "External kubeconfig has not established Kubernetes API reachability"})
+		if _, err := r.reconcileExternalKubeconfig(ctx, cluster, tcp); err != nil {
+			return nil
+		}
+	}
 	// Probe workload cluster reachability to set Initialized + AvailableCondition. Failure here
 	// only suppresses the AvailableCondition; replica counters stay accurate.
 	c, err := r.ClusterCache.GetClient(ctx, util.ObjectKey(cluster))
 	if err != nil {
-		r.Log.Info("failed to get kubeconfig for the cluster", "error", err)
+		if tcp.Spec.Kubeconfig.Mode != controlplanev1.KubeconfigModeExternal {
+			r.Log.Info("failed to get kubeconfig for the cluster", "error", err)
+		}
 
 		return nil
 	}
@@ -761,7 +769,9 @@ func (r *TalosControlPlaneReconciler) updateStatus(ctx context.Context, tcp *con
 	}
 
 	if err := c.List(ctx, &corev1.NodeList{}, &client.ListOptions{LabelSelector: nodeSelector.Add(*req)}); err != nil {
-		r.Log.Info("failed to list controlplane nodes", "error", err)
+		if tcp.Spec.Kubeconfig.Mode != controlplanev1.KubeconfigModeExternal {
+			r.Log.Info("failed to list controlplane nodes", "error", err)
+		}
 
 		return nil
 	}
@@ -806,6 +816,9 @@ func (r *TalosControlPlaneReconciler) reconcileExternalReference(ctx context.Con
 }
 
 func (r *TalosControlPlaneReconciler) reconcileKubeconfig(ctx context.Context, cluster *clusterv1.Cluster, tcp *controlplanev1.TalosControlPlane, machines *clusterv1.MachineList) (ctrl.Result, error) {
+	if tcp.Spec.Kubeconfig.Mode == controlplanev1.KubeconfigModeExternal {
+		return r.reconcileExternalKubeconfig(ctx, cluster, tcp)
+	}
 	endpoint := cluster.Spec.ControlPlaneEndpoint
 	if endpoint.IsZero() {
 		return ctrl.Result{}, nil
@@ -1210,6 +1223,9 @@ func copyInt32Pointer(in *int32) *int32 {
 
 func patchTalosControlPlane(ctx context.Context, patchHelper *patch.Helper, tcp *controlplanev1.TalosControlPlane, opts ...patch.Option) error {
 	// Always update the readyCondition by summarizing the state of other conditions.
+	if tcp.Spec.Kubeconfig.Mode == controlplanev1.KubeconfigModeExternal && !conditions.IsTrue(tcp, controlplanev1.KubeconfigAvailableCondition) {
+		conditions.Set(tcp, metav1.Condition{Type: string(controlplanev1.AvailableCondition), Status: metav1.ConditionFalse, Reason: "ExternalKubeconfigUnavailable", Message: "Externally managed kubeconfig is not valid or available"})
+	}
 	if err := conditions.SetSummaryCondition(
 		tcp,
 		tcp,
@@ -1233,6 +1249,7 @@ func patchTalosControlPlane(ctx context.Context, patchHelper *patch.Helper, tcp 
 			string(controlplanev1.MachinesAllReadyCondition),
 			string(controlplanev1.AvailableCondition),
 			string(controlplanev1.MachinesBootstrapped),
+			controlplanev1.KubeconfigAvailableCondition,
 		}},
 	)
 
