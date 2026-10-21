@@ -380,6 +380,41 @@ KUBEBUILDER_ASSETS=<setup-envtest-binary-directory> go test ./controllers \
   -run '^(TestReconcileInPlaceUpdates|TestPreflight_HoldsUpdatingMachineEvenWhenExcluded|TestInPlaceSerializationControllerEnvtest)' -count=1 -v
 ```
 
+### Runtime extension namespace scope and settings
+
+The control plane's narrow runtime caller honors the registered
+`ExtensionConfig.spec.namespaceSelector` against the **Machine namespace's**
+labels, not Machine labels or the extension Service namespace. Core CAPI
+admission defaults an omitted selector to `{}`, which matches every namespace.
+Use `matchLabels` or `matchExpressions` to restrict the extension's scope. The
+provider needs only `get` permission on Namespaces for this lookup.
+
+Discovery and the actual call independently read the current registration and
+namespace labels. A previously discovered handler cannot bypass a subsequently
+narrowed selector or relabeled namespace. Invalid/missing selectors and API read
+errors are hard failures, not empty discovery or permission to replace a Machine.
+A valid selector excluding a namespace makes that extension unavailable there.
+
+`spec.settings` is included in hook requests, with request-specific values taking
+precedence. Neither the caller's request nor the registration is modified; the
+request is copied only when registration settings must be added. This is not a
+general-purpose replacement for the internal core CAPI runtime client. In-place
+handlers must use `failurePolicy: Fail` (also core's default). `Ignore` is
+unsupported and rejected: call errors must not become successful responses or
+silently authorize replacement of an ambiguous operation.
+
+The local regression uses real CAPI Runtime SDK TLS Discovery and
+`CanUpdateMachine`, with Discovery-derived handler status persisted in a disposable
+envtest management API server. It checks request settings and returned coverage,
+selected/excluded namespaces, relabeling, selector narrowing, zero excluded calls,
+and successful recovery. It does **not** run the CABPT executor or core
+Machine/ExtensionConfig reconcilers, prove Talos completion, or access a live
+cluster:
+
+```sh
+KUBEBUILDER_ASSETS=<setup-envtest-binary-directory> go test ./internal/runtimeclient -count=1 -v
+```
+
 ### Machine deletion and etcd
 
 Control plane `Machine` deletion follows the Kubeadm Control Plane provider's pattern, on every

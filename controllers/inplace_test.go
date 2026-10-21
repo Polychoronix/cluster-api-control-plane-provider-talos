@@ -45,7 +45,7 @@ func (f *fakeCaller) GetAllExtensions(context.Context, runtimecatalog.Hook, meta
 	return f.extensions, nil
 }
 
-func (f *fakeCaller) CallExtension(_ context.Context, _ runtimecatalog.Hook, _ metav1.Object, _ string, request, response any) error {
+func (f *fakeCaller) CallExtension(_ context.Context, _ runtimecatalog.Hook, _ metav1.Object, _ string, request runtimehooksv1.RequestObject, response runtimehooksv1.ResponseObject) error {
 	f.calls++
 
 	req, ok := request.(*runtimehooksv1.CanUpdateMachineRequest)
