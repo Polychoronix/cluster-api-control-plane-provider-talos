@@ -51,6 +51,10 @@ func validExternalKubeconfig(secret *corev1.Secret) bool {
 	if current == nil || config.Clusters[current.Cluster] == nil {
 		return false
 	}
+	auth := config.AuthInfos[current.AuthInfo]
+	if auth != nil && (auth.Exec != nil || auth.AuthProvider != nil) {
+		return false // CAPI ClusterCache rejects both plugin mechanisms.
+	}
 	endpoint, err := url.Parse(config.Clusters[current.Cluster].Server)
 	return err == nil && endpoint.Scheme == "https" && endpoint.Hostname() != ""
 }

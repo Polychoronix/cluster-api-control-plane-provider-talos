@@ -6,6 +6,7 @@ package controllers
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	controlplanev1 "github.com/siderolabs/cluster-api-control-plane-provider-talos/api/v1beta1"
@@ -52,6 +53,8 @@ func TestExternalKubeconfig_NeverWritesOrRotates(t *testing.T) {
 		{"empty", nil, "kissanpentu", false, false},
 		{"wrong-label", []byte(externalAuthProxyKubeconfig), "other", false, false},
 		{"missing", nil, "", true, false},
+		{"exec", []byte(strings.Replace(externalAuthProxyKubeconfig, "token: private-sentinel", "exec:\n      apiVersion: client.authentication.k8s.io/v1\n      command: never-execute\n      interactiveMode: Never", 1)), "kissanpentu", false, false},
+		{"auth-provider", []byte(strings.Replace(externalAuthProxyKubeconfig, "token: private-sentinel", "auth-provider:\n      name: oidc", 1)), "kissanpentu", false, false},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			ctx := context.Background()

@@ -746,8 +746,8 @@ func (r *TalosControlPlaneReconciler) updateStatus(ctx context.Context, tcp *con
 	tcp.Status.ReadyReplicas = readyReplicas
 
 	if tcp.Spec.Kubeconfig.Mode == controlplanev1.KubeconfigModeExternal {
-		conditions.Set(tcp, metav1.Condition{Type: string(controlplanev1.AvailableCondition), Status: metav1.ConditionFalse, Reason: "ExternalKubernetesAPIUnreachable", Message: "External kubeconfig has not established Kubernetes API reachability"})
 		if _, err := r.reconcileExternalKubeconfig(ctx, cluster, tcp); err != nil {
+			conditions.Set(tcp, metav1.Condition{Type: string(controlplanev1.AvailableCondition), Status: metav1.ConditionFalse, Reason: "ExternalKubeconfigUnavailable", Message: "Externally managed kubeconfig is not valid or available"})
 			return nil
 		}
 	}
@@ -755,6 +755,9 @@ func (r *TalosControlPlaneReconciler) updateStatus(ctx context.Context, tcp *con
 	// only suppresses the AvailableCondition; replica counters stay accurate.
 	c, err := r.ClusterCache.GetClient(ctx, util.ObjectKey(cluster))
 	if err != nil {
+		if tcp.Spec.Kubeconfig.Mode == controlplanev1.KubeconfigModeExternal {
+			conditions.Set(tcp, metav1.Condition{Type: string(controlplanev1.AvailableCondition), Status: metav1.ConditionFalse, Reason: "ExternalKubernetesAPIUnreachable", Message: "External kubeconfig cannot establish Kubernetes API reachability"})
+		}
 		if tcp.Spec.Kubeconfig.Mode != controlplanev1.KubeconfigModeExternal {
 			r.Log.Info("failed to get kubeconfig for the cluster", "error", err)
 		}
@@ -769,6 +772,9 @@ func (r *TalosControlPlaneReconciler) updateStatus(ctx context.Context, tcp *con
 	}
 
 	if err := c.List(ctx, &corev1.NodeList{}, &client.ListOptions{LabelSelector: nodeSelector.Add(*req)}); err != nil {
+		if tcp.Spec.Kubeconfig.Mode == controlplanev1.KubeconfigModeExternal {
+			conditions.Set(tcp, metav1.Condition{Type: string(controlplanev1.AvailableCondition), Status: metav1.ConditionFalse, Reason: "ExternalKubernetesAPIUnreachable", Message: "External kubeconfig cannot establish Kubernetes API reachability"})
+		}
 		if tcp.Spec.Kubeconfig.Mode != controlplanev1.KubeconfigModeExternal {
 			r.Log.Info("failed to list controlplane nodes", "error", err)
 		}

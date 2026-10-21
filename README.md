@@ -314,8 +314,10 @@ External mode consumes only the standard namespace-local `<cluster>-kubeconfig`
 Secret, key `value`; it never creates a replacement, takes ownership, rewrites
 labels/credentials, or attempts client-certificate rotation. The Secret's external
 owner must provide the matching `cluster.x-k8s.io/cluster-name` label required by
-the CAPI Cluster cache. Token and exec authentication do not need a Kubernetes
-client certificate. Supply valid HTTPS server/current-context configuration.
+the CAPI Cluster cache. Token authentication works without a Kubernetes client
+certificate; exec and auth-provider plugins are unsupported by core CAPI and
+are rejected without execution. Supply valid HTTPS server/current-context
+configuration. The kubeconfig's `tls-server-name` may differ from its dial host.
 Missing or invalid input reports `KubeconfigAvailable=False` using safe messages;
 Kubernetes API reachability is separately observed through `Available` and never
 inferred from successful kubeconfig parsing. Inspect metadata/conditions only:
@@ -325,6 +327,18 @@ kubectl get secret <cluster>-kubeconfig -n <namespace> \
   -o custom-columns=NAME:.metadata.name,UID:.metadata.uid,OWNERS:.metadata.ownerReferences[*].name
 kubectl get taloscontrolplane <name> -n <namespace> \
   -o jsonpath='{.status.conditions}'
+```
+
+The local `TestExternalKubeconfigClusterCacheTransport` smoke exercises the real
+CAPI ClusterCache and TLS REST client with token-only auth, separate dial host/SNI,
+and no client certificate. It observes repeated Kubernetes API requests, unchanged
+Secret bytes/metadata, stable healthy condition transition timestamps, and actual
+denial/recovery transitions. It uses disposable envtest management storage and an
+in-memory TLS workload endpoint, never an ambient/live cluster:
+
+```sh
+KUBEBUILDER_ASSETS=<setup-envtest-binary-directory> go test ./controllers \
+  -run '^TestExternalKubeconfig' -count=1 -v
 ```
 
 For kissanpentu, retain `kissanpentu-kubeconfig` and its validated auth-proxy path.
