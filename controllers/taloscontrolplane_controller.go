@@ -1007,14 +1007,19 @@ func (r *TalosControlPlaneReconciler) reconcileMachines(ctx context.Context, clu
 	// The owner's spec writes precede runtime completion. Hold every Machine
 	// mutation, including scaling and replacement, until the core executor clears
 	// both transaction annotations. This also covers zero outdated Machines.
-	updating := collections.FromMachineList(machines).Filter(isUpdatingInPlace)
-	if len(updating) > 0 {
-		logger.Info("waiting for in-place transaction completion", "machines", updating.Names())
+	updating := 0
+	for i := range machines.Items {
+		if isUpdatingInPlace(&machines.Items[i]) {
+			updating++
+		}
+	}
+	if updating > 0 {
+		logger.Info("waiting for in-place transaction completion", "transactions", updating)
 		conditions.Set(tcp, metav1.Condition{
 			Type:    string(controlplanev1.MachinesSpecUpToDateCondition),
 			Status:  metav1.ConditionFalse,
 			Reason:  controlplanev1.InPlaceUpdateInProgressReason,
-			Message: fmt.Sprintf("Waiting for %d in-place transactions to complete", len(updating)),
+			Message: fmt.Sprintf("Waiting for %d in-place transactions to complete", updating),
 		})
 		return ctrl.Result{RequeueAfter: requeueDuration}, nil
 	}
