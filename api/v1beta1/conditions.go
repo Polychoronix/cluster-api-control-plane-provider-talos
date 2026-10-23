@@ -16,6 +16,12 @@ const (
 )
 
 const (
+	// VersionObservedCondition reports complete running per-node API-server
+	// observations with no in-place completion handshake still outstanding.
+	VersionObservedCondition = "VersionObserved"
+)
+
+const (
 	// MachinesBootstrapped is tracking control planes bootstrap status.
 	MachinesBootstrapped = "MachinesBootstrapped"
 

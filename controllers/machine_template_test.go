@@ -42,7 +42,7 @@ func TestReconcileMachineTemplateStatePropagatesMachineFieldsInPlace(t *testing.
 	}
 
 	fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(machine).Build()
-	reconciler := &TalosControlPlaneReconciler{Client: fakeClient}
+	reconciler := &TalosControlPlaneReconciler{Client: fakeClient, APIReader: fakeClient}
 
 	cluster := &clusterv1.Cluster{
 		ObjectMeta: metav1.ObjectMeta{

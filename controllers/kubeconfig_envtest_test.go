@@ -7,6 +7,7 @@ package controllers
 import (
 	"context"
 	"crypto/x509"
+	"encoding/json"
 	"encoding/pem"
 	"fmt"
 	"net/http"
@@ -40,7 +41,11 @@ import (
 // external kubeconfig. Only the management API is envtest; no ambient cluster is used.
 func TestExternalKubeconfigClusterCacheTransport(t *testing.T) {
 	var denied atomic.Bool
+	var versionInputs atomic.Bool
+	var targetImage atomic.Bool
+	var podsDenied atomic.Bool
 	var requests, nodeRequests atomic.Int64
+	var podRequests atomic.Int64
 	token := "local-test-token"
 	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		requests.Add(1)
@@ -61,10 +66,28 @@ func TestExternalKubeconfigClusterCacheTransport(t *testing.T) {
 		case "/apis":
 			fmt.Fprint(w, `{"kind":"APIGroupList","apiVersion":"v1","groups":[]}`)
 		case "/api/v1":
-			fmt.Fprint(w, `{"kind":"APIResourceList","apiVersion":"v1","groupVersion":"v1","resources":[{"name":"nodes","singularName":"node","namespaced":false,"kind":"Node","verbs":["get","list","watch"]}]}`)
+			fmt.Fprint(w, `{"kind":"APIResourceList","apiVersion":"v1","groupVersion":"v1","resources":[{"name":"nodes","singularName":"node","namespaced":false,"kind":"Node","verbs":["get","list","watch"]},{"name":"pods","singularName":"pod","namespaced":true,"kind":"Pod","verbs":["get","list","watch"]}]}`)
 		case "/api/v1/nodes":
 			nodeRequests.Add(1)
-			fmt.Fprint(w, `{"kind":"NodeList","apiVersion":"v1","metadata":{"resourceVersion":"1"},"items":[]}`)
+			if versionInputs.Load() {
+				_, nodes, _ := versionFixtures()
+				_ = json.NewEncoder(w).Encode(&corev1.NodeList{TypeMeta: metav1.TypeMeta{Kind: "NodeList", APIVersion: "v1"}, Items: nodes})
+			} else {
+				fmt.Fprint(w, `{"kind":"NodeList","apiVersion":"v1","metadata":{"resourceVersion":"1"},"items":[]}`)
+			}
+		case "/api/v1/namespaces/kube-system/pods":
+			podRequests.Add(1)
+			if podsDenied.Load() {
+				w.WriteHeader(http.StatusForbidden)
+				return
+			}
+			_, _, pods := versionFixtures()
+			if targetImage.Load() {
+				for i := range pods {
+					pods[i].Status.ContainerStatuses[0].Image = "registry/kube-apiserver:v1.36.0"
+				}
+			}
+			_ = json.NewEncoder(w).Encode(&corev1.PodList{TypeMeta: metav1.TypeMeta{Kind: "PodList", APIVersion: "v1"}, Items: pods})
 		default:
 			w.WriteHeader(http.StatusNotFound)
 		}
@@ -142,6 +165,29 @@ func TestExternalKubeconfigClusterCacheTransport(t *testing.T) {
 	require.NoError(t, r.updateStatus(ctx, tcp, cluster))
 	require.True(t, conditions.IsTrue(tcp, string(controlplanev1.AvailableCondition)))
 	require.True(t, conditions.Get(tcp, string(controlplanev1.AvailableCondition)).LastTransitionTime.After(failedTransition.Time))
+	// The exact same token-only auth-proxy transport performs uncached per-node
+	// image observations; cached Machine intent must not advance the version.
+	versionInputs.Store(true)
+	machines, _, _ := versionFixtures()
+	tcp.Status.Version = ptr.To("v1.36.0")
+	conditions.Delete(tcp, controlplanev1.VersionObservedCondition)
+	r.observeControlPlaneVersion(ctx, tcp, cluster, machines)
+	require.Equal(t, "v1.35.0", *tcp.Status.Version)
+	require.True(t, conditions.IsTrue(tcp, controlplanev1.VersionObservedCondition))
+	targetImage.Store(true)
+	machines[1].Annotations = map[string]string{clusterv1.UpdateInProgressAnnotation: ""}
+	r.observeControlPlaneVersion(ctx, tcp, cluster, machines)
+	require.Equal(t, "v1.35.0", *tcp.Status.Version)
+	require.True(t, conditions.IsFalse(tcp, controlplanev1.VersionObservedCondition))
+	machines[1].Annotations = nil
+	r.observeControlPlaneVersion(ctx, tcp, cluster, machines)
+	require.Equal(t, "v1.36.0", *tcp.Status.Version)
+	require.True(t, conditions.IsTrue(tcp, controlplanev1.VersionObservedCondition))
+	podsDenied.Store(true)
+	r.observeControlPlaneVersion(ctx, tcp, cluster, machines)
+	require.Equal(t, "v1.36.0", *tcp.Status.Version)
+	require.True(t, conditions.IsFalse(tcp, controlplanev1.VersionObservedCondition))
+	require.Greater(t, podRequests.Load(), int64(3), "uncached reader must issue each actual Pod-list TLS request")
 	var after corev1.Secret
 	require.NoError(t, c.Get(ctx, client.ObjectKeyFromObject(secret), &after))
 	require.Equal(t, before, after, "token bytes, metadata, RV and ownership are untouched; no certificate rotation")

@@ -31,6 +31,7 @@ type inPlacePlan struct {
 	desiredMachine      *clusterv1.Machine
 	desiredInfraMachine *unstructured.Unstructured
 	desiredTalosConfig  *cabptv1.TalosConfig
+	currentTalosConfig  *cabptv1.TalosConfig
 }
 
 // inPlaceDecision is the outcome of offering the outdated control plane Machines to the
@@ -143,7 +144,7 @@ func (r *TalosControlPlaneReconciler) offerInPlace(
 		return decision, nil
 	}
 
-	if err := r.triggerInPlaceUpdate(ctx, plan); err != nil {
+	if err := r.triggerInPlaceUpdate(ctx, tcp, controlPlane.Cluster, plan); err != nil {
 		return decision, err
 	}
 
@@ -206,8 +207,13 @@ func (r *TalosControlPlaneReconciler) buildInPlacePlan(
 		return nil, fmt.Errorf("cannot plan in-place update for %s: TalosConfig not found", klog.KObj(machine))
 	}
 
+	plan.currentTalosConfig = current
 	desiredTalosConfig := current.DeepCopy()
-	desiredTalosConfig.Spec = tcp.Spec.ControlPlaneConfig.ControlPlaneConfig
+	desiredSpec, err := tcp.Spec.EffectiveTalosConfigSpec(machine)
+	if err != nil {
+		return nil, err
+	}
+	desiredTalosConfig.Spec = *desiredSpec
 	plan.desiredTalosConfig = desiredTalosConfig
 
 	return plan, nil

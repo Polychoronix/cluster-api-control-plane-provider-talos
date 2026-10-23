@@ -17,6 +17,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/types"
 	kerrors "k8s.io/apimachinery/pkg/util/errors"
 	"k8s.io/klog/v2"
 	clusterv1 "sigs.k8s.io/cluster-api/api/core/v1beta2"
@@ -33,9 +34,11 @@ var Log = klog.Background()
 // ControlPlane holds business logic around control planes.
 // It should never need to connect to a service, that responsibility lies outside of this struct.
 type ControlPlane struct {
-	TCP      *controlplanev1.TalosControlPlane
-	Cluster  *clusterv1.Cluster
-	Machines collections.Machines
+	TCP           *controlplanev1.TalosControlPlane
+	Cluster       *clusterv1.Cluster
+	Machines      collections.Machines
+	updateHeld    bool
+	updateMachine types.UID
 
 	infraObjects map[string]*unstructured.Unstructured
 	talosConfigs map[string]*cabptv1.TalosConfig
@@ -76,35 +79,40 @@ func (c *ControlPlane) MachineWithDeleteAnnotation(machines collections.Machines
 }
 
 // MachinesNeedingRollout return a list of machines that need to be rolled out.
-func (c *ControlPlane) MachinesNeedingRollout() collections.Machines {
+func (c *ControlPlane) MachinesNeedingRollout() (collections.Machines, error) {
 	if c.TCP.Spec.RolloutStrategy != nil && c.TCP.Spec.RolloutStrategy.Type == controlplanev1.OnDeleteStrategyType {
-		return collections.New()
+		return collections.New(), nil
 	}
 
 	return c.MachinesWithOutdatedRolloutSpec()
 }
 
 // MachinesWithOutdatedRolloutSpec returns Machines whose rollout-requiring fields do not match the desired control plane spec.
-func (c *ControlPlane) MachinesWithOutdatedRolloutSpec() collections.Machines {
+func (c *ControlPlane) MachinesWithOutdatedRolloutSpec() (collections.Machines, error) {
 	// Ignore machines to be deleted.
 	machines := c.Machines.Filter(collections.Not(collections.HasDeletionTimestamp))
 
 	// Return machines if they are scheduled for rollout or if with an outdated configuration.
-	return machines.AnyFilter(
-		// Machines that do not match with TCP config.
-		collections.Not(
-			collections.And(
-				collections.MatchesKubernetesVersion(c.TCP.Spec.Version),
-				MatchesTemplateClonedFrom(c.infraObjects, c.TCP),
-				MatchesControlPlaneConfig(c.talosConfigs, c.TCP),
-			),
-		),
-	)
+	result := collections.New()
+	matchesInfra := MatchesTemplateClonedFrom(c.infraObjects, c.TCP)
+	matchesVersion := collections.MatchesKubernetesVersion(c.TCP.Spec.Version)
+	for _, machine := range machines {
+		desired, err := c.TCP.Spec.EffectiveTalosConfigSpec(machine)
+		if err != nil {
+			return nil, err
+		}
+		config, found := c.talosConfigs[machine.Name]
+		configMatches := !found || reflect.DeepEqual(*desired, config.Spec)
+		if !matchesInfra(machine) || !matchesVersion(machine) || !configMatches {
+			result.Insert(machine)
+		}
+	}
+	return result, nil
 }
 
 // reconcileMachineUpToDateConditions sets the v1beta2 UpToDate condition on each
-// non-deleting control plane Machine based on whether its rollout-requiring spec
-// matches the desired TalosControlPlane spec, and patches each Machine.
+// non-deleting control plane Machine from desired spec matching plus pending
+// public/private update and observed kubelet guards, and patches each Machine.
 //
 // The core Machine controller intentionally does not compute UpToDate for
 // stand-alone Machines (see sigs.k8s.io/cluster-api/internal/controllers/machine
@@ -113,7 +121,10 @@ func (c *ControlPlane) MachinesWithOutdatedRolloutSpec() collections.Machines {
 // rollout gating, Cluster status aggregation) treat the control plane as not
 // up-to-date and stall dependent rollouts.
 func (c *ControlPlane) reconcileMachineUpToDateConditions(ctx context.Context, cl client.Client) error {
-	outdated := c.MachinesWithOutdatedRolloutSpec()
+	outdated, err := c.MachinesWithOutdatedRolloutSpec()
+	if err != nil {
+		return err
+	}
 	nonDeleting := c.Machines.Filter(collections.Not(collections.HasDeletionTimestamp))
 
 	var errs []error
@@ -129,6 +140,20 @@ func (c *ControlPlane) reconcileMachineUpToDateConditions(ctx context.Context, c
 				Type:   clusterv1.MachineUpToDateCondition,
 				Status: metav1.ConditionFalse,
 				Reason: clusterv1.MachineNotUpToDateReason,
+			})
+		} else if updating := conditions.Get(machine, clusterv1.MachineUpdatingCondition); (c.updateHeld && (c.updateMachine == "" || c.updateMachine == machine.UID)) || isUpdatingInPlace(machine) || (updating != nil && updating.Status == metav1.ConditionTrue) {
+			conditions.Set(machine, metav1.Condition{
+				Type:    clusterv1.MachineUpToDateCondition,
+				Status:  metav1.ConditionFalse,
+				Reason:  clusterv1.MachineUpToDateUpdatingReason,
+				Message: "In-place update in progress",
+			})
+		} else if machine.Status.NodeInfo != nil && machine.Status.NodeInfo.KubeletVersion != "" && machine.Status.NodeInfo.KubeletVersion != machine.Spec.Version {
+			conditions.Set(machine, metav1.Condition{
+				Type:    clusterv1.MachineUpToDateCondition,
+				Status:  metav1.ConditionFalse,
+				Reason:  clusterv1.MachineUpToDateUpdatingReason,
+				Message: "Observed kubelet version does not match the desired Machine version",
 			})
 		} else {
 			conditions.Set(machine, metav1.Condition{
@@ -221,22 +246,5 @@ func MatchesTemplateClonedFrom(infraConfigs map[string]*unstructured.Unstructure
 		}
 
 		return true
-	}
-}
-
-// MatchesControlPlaneConfig returns a filter to find all machines that match a given controlPaneConfig.
-func MatchesControlPlaneConfig(talosConfigs map[string]*cabptv1.TalosConfig, tcp *controlplanev1.TalosControlPlane) collections.Func {
-	return func(machine *clusterv1.Machine) bool {
-		if machine == nil {
-			return false
-		}
-
-		talosConfig, found := talosConfigs[machine.Name]
-		if !found {
-			// Return true here because failing to get talosconfig should not be considered as unmatching.
-			return true
-		}
-
-		return reflect.DeepEqual(tcp.Spec.ControlPlaneConfig.ControlPlaneConfig, talosConfig.Spec)
 	}
 }

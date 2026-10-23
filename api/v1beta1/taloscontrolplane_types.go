@@ -7,6 +7,7 @@ package v1beta1
 import (
 	cabptv1 "github.com/siderolabs/cluster-api-bootstrap-provider-talos/api/v1beta1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	clusterv1 "sigs.k8s.io/cluster-api/api/core/v1beta2"
 )
@@ -22,6 +23,23 @@ const (
 
 type ControlPlaneConfig struct {
 	ControlPlaneConfig cabptv1.TalosConfigSpec `json:"controlplane"`
+}
+
+// MachineConfigOverride binds private configuration references and management
+// transport to one existing Machine identity in the control plane namespace.
+// +kubebuilder:validation:XValidation:rule="has(self.config) || has(self.talosEndpoint)",message="config or talosEndpoint is required"
+type MachineConfigOverride struct {
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=253
+	Name string `json:"name"`
+	// +kubebuilder:validation:Type=string
+	// +kubebuilder:validation:MinLength=1
+	UID types.UID `json:"uid"`
+	// Config occupies the per-Machine slot; shared patches remain in the root spec.
+	// +optional
+	Config *cabptv1.MachineConfigOverlay `json:"config,omitempty"`
+	// +optional
+	TalosEndpoint *cabptv1.TalosEndpoint `json:"talosEndpoint,omitempty"`
 }
 
 // KubeconfigMode selects who owns the standard Cluster kubeconfig Secret.
@@ -118,6 +136,7 @@ const (
 )
 
 // TalosControlPlaneSpec defines the desired state of TalosControlPlane
+// +kubebuilder:validation:XValidation:rule="!has(self.machineConfigOverrides) || !has(self.controlPlaneConfig.controlplane.machineConfig) || self.machineConfigOverrides.all(x, !has(x.config))",message="override config cannot coexist with shared machineConfig"
 type TalosControlPlaneSpec struct {
 	// Number of desired machines. Defaults to 1. When stacked etcd is used only
 	// odd numbers are permitted, as per [etcd best practice](https://etcd.io/docs/v3.3.12/faq/#why-an-odd-number-of-cluster-members).
@@ -143,6 +162,13 @@ type TalosControlPlaneSpec struct {
 	// ControlPlaneConfig is a two TalosConfigSpecs
 	// to use for initializing and joining machines to the control plane.
 	ControlPlaneConfig ControlPlaneConfig `json:"controlPlaneConfig"`
+
+	// MachineConfigOverrides apply only to a matching existing Machine name and UID.
+	// Namespace is implicit. New Machines never consume a pinned entry.
+	// +listType=map
+	// +listMapKey=name
+	// +optional
+	MachineConfigOverrides []MachineConfigOverride `json:"machineConfigOverrides,omitempty"`
 
 	// The RolloutStrategy to use to replace control plane machines with
 	// new ones.
@@ -237,8 +263,10 @@ type TalosControlPlaneStatus struct {
 	// +optional
 	UpToDateReplicas *int32 `json:"upToDateReplicas,omitempty"`
 
-	// version represents the minimum Kubernetes version for the control plane machines
-	// in the cluster.
+	// Version is the minimum observed running API-server image version across
+	// all associated control-plane Machines after pending updates complete.
+	// VersionObserved records observation provenance; transient failures retain
+	// only a previously observed value, never desired Machine versions.
 	// +optional
 	Version *string `json:"version,omitempty"`
 

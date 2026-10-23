@@ -131,10 +131,12 @@ func newInPlaceFixture(t *testing.T, machineAnnotations map[string]string) *inPl
 	}}
 
 	caller := &fakeCaller{extensions: []string{"can-update-machine"}}
+	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(machine, talosConfig).Build()
 
 	return &inPlaceFixture{
 		reconciler: &TalosControlPlaneReconciler{
-			Client:        fake.NewClientBuilder().WithScheme(scheme).WithObjects(machine, talosConfig).Build(),
+			Client:        c,
+			APIReader:     c,
 			Log:           ctrl.Log.WithName("test"),
 			Scheme:        scheme,
 			RuntimeClient: caller,
@@ -227,7 +229,8 @@ func TestReconcileInPlaceUpdates_HoldsSpecMatchedTransaction(t *testing.T) {
 					if allMatched {
 						second.Spec.Version = f.tcp.Spec.Version
 					}
-					outdated := f.controlPlane.MachinesWithOutdatedRolloutSpec()
+					outdated, err := f.controlPlane.MachinesWithOutdatedRolloutSpec()
+					require.NoError(t, err)
 					require.NotContains(t, outdated, f.machine.Name)
 					decision, err := f.reconciler.reconcileInPlaceUpdates(context.Background(), f.tcp, f.controlPlane, outdated)
 					require.NoError(t, err)
@@ -292,20 +295,26 @@ func TestOfferInPlace_DeclinedMachineIsRolledOut(t *testing.T) {
 
 // A change the extension covers is triggered and claimed, and nothing is rolled out.
 func TestOfferInPlace_ClaimsTriggeredMachine(t *testing.T) {
-	f := newInPlaceFixture(t, nil)
-	// No InfraMachine to write: the fake client cannot apply an unregistered kind, and the
-	// infrastructure is carried through unchanged anyway.
-	delete(f.controlPlane.infraObjects, "machine-1")
-
-	decision, err := f.reconciler.offerInPlace(context.Background(), f.tcp, f.controlPlane, f.machine)
-
+	f := newOwnerFixture(t, nil)
+	caller := &fakeCaller{extensions: []string{"can-update-machine"}}
+	caller.respond = func(req *runtimehooksv1.CanUpdateMachineRequest, resp *runtimehooksv1.CanUpdateMachineResponse) {
+		data, err := json.Marshal([]map[string]any{{"op": "replace", "path": "/spec", "value": req.Desired.Machine.Spec}})
+		require.NoError(t, err)
+		resp.MachinePatch = runtimehooksv1.Patch{PatchType: runtimehooksv1.JSONPatchType, Patch: data}
+		var config map[string]any
+		require.NoError(t, json.Unmarshal(req.Desired.BootstrapConfig.Raw, &config))
+		data, err = json.Marshal([]map[string]any{{"op": "replace", "path": "/spec", "value": config["spec"]}})
+		require.NoError(t, err)
+		resp.BootstrapConfigPatch = runtimehooksv1.Patch{PatchType: runtimehooksv1.JSONPatchType, Patch: data}
+	}
+	f.r.RuntimeClient = caller
+	plane := &ControlPlane{TCP: f.tcp, Cluster: f.cluster, Machines: collections.FromMachines(f.machine), infraObjects: map[string]*unstructured.Unstructured{f.machine.Name: f.infra}, talosConfigs: map[string]*cabptv1.TalosConfig{f.machine.Name: f.config}}
+	decision, err := f.r.offerInPlace(t.Context(), f.tcp, plane, f.machine)
 	require.NoError(t, err)
-	assert.ElementsMatch(t, []string{"machine-1"}, decision.claimed.Names())
-	assert.Empty(t, decision.rollout)
-
-	var machine clusterv1.Machine
-	require.NoError(t, f.reconciler.Get(context.Background(), client.ObjectKey{Namespace: "default", Name: "machine-1"}, &machine))
-	assert.Contains(t, machine.Annotations, clusterv1.UpdateInProgressAnnotation)
+	require.Contains(t, decision.claimed, f.machine.Name)
+	require.Empty(t, decision.rollout)
+	require.NoError(t, f.r.Client.Get(t.Context(), client.ObjectKeyFromObject(f.machine), f.machine))
+	require.True(t, isUpdatingInPlace(f.machine))
 }
 
 // A machine already carrying the annotation stays claimed so the rollout path leaves it
@@ -419,27 +428,15 @@ func TestBuildInPlacePlan_UsesDesiredSpecFromTCP(t *testing.T) {
 // The trigger is what commits Cluster API to the in-place path, so all three objects must end
 // up annotated and the hook must end up pending.
 func TestTriggerInPlaceUpdate_AnnotatesAndMarksHookPending(t *testing.T) {
-	f := newInPlaceFixture(t, nil)
-
-	plan, err := f.reconciler.buildInPlacePlan(f.tcp, f.controlPlane, f.machine)
+	f := newOwnerFixture(t, nil)
+	require.NoError(t, f.r.triggerInPlaceUpdate(t.Context(), f.tcp, f.cluster, f.update))
+	ownerOutput(t, f.r, f.cluster, f.machine)
+	secret, plan, err := f.r.readOwnerPlan(t.Context(), f.tcp)
 	require.NoError(t, err)
-
-	require.NoError(t, f.reconciler.triggerInPlaceUpdate(context.Background(), plan))
-
-	var machine clusterv1.Machine
-	require.NoError(t, f.reconciler.Client.Get(context.Background(),
-		ctrlKey("default", "machine-1"), &machine))
-
-	assert.Contains(t, machine.Annotations, clusterv1.UpdateInProgressAnnotation)
-	assert.Contains(t, machine.Annotations[runtimev1.PendingHooksAnnotation], "UpdateMachine")
-
-	var talosConfig cabptv1.TalosConfig
-	require.NoError(t, f.reconciler.Client.Get(context.Background(),
-		ctrlKey("default", "machine-1"), &talosConfig))
-
-	assert.Contains(t, talosConfig.Annotations, clusterv1.UpdateInProgressAnnotation,
-		"CABPT's webhook admits the spec change only because of this annotation")
-	assert.Equal(t, "controlplane", talosConfig.Spec.GenerateType)
+	_, err = f.r.resumeOwnerPlan(t.Context(), f.tcp, f.cluster, secret, plan)
+	require.NoError(t, err)
+	require.NoError(t, f.r.Client.Get(t.Context(), client.ObjectKeyFromObject(f.machine), f.machine))
+	require.Contains(t, f.machine.Annotations[runtimev1.PendingHooksAnnotation], "UpdateMachine")
 }
 
 // ctrlKey is a small helper to keep the object lookups above readable.

@@ -16,7 +16,9 @@ import (
 	cabptv1 "github.com/siderolabs/cluster-api-bootstrap-provider-talos/api/v1beta1"
 	controlplanev1 "github.com/siderolabs/cluster-api-control-plane-provider-talos/api/v1beta1"
 	"github.com/stretchr/testify/require"
+	corev1 "k8s.io/api/core/v1"
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -25,6 +27,7 @@ import (
 	utilfeature "k8s.io/component-base/featuregate/testing"
 	"k8s.io/utils/ptr"
 	clusterv1 "sigs.k8s.io/cluster-api/api/core/v1beta2"
+	runtimev1 "sigs.k8s.io/cluster-api/api/runtime/v1beta2"
 	"sigs.k8s.io/cluster-api/controllers/clustercache"
 	"sigs.k8s.io/cluster-api/feature"
 	"sigs.k8s.io/cluster-api/util/collections"
@@ -71,6 +74,7 @@ func TestInPlaceSerializationControllerEnvtest(t *testing.T) {
 	t.Cleanup(func() { require.NoError(t, env.Stop()) })
 	scheme := runtime.NewScheme()
 	require.NoError(t, clusterv1.AddToScheme(scheme))
+	require.NoError(t, corev1.AddToScheme(scheme))
 	require.NoError(t, cabptv1.AddToScheme(scheme))
 	require.NoError(t, controlplanev1.AddToScheme(scheme))
 	c, err := client.New(cfg, client.Options{Scheme: scheme})
@@ -121,15 +125,50 @@ func TestInPlaceSerializationControllerEnvtest(t *testing.T) {
 						m.UID = ""
 						require.NoError(t, c.Create(ctx, m))
 						m.Status.NodeRef = nodeRef
+						m.Status.NodeRef.Name = m.Name
 						require.NoError(t, c.Status().Update(ctx, m))
 						f.controlPlane.infraObjects[m.Name] = infra
 						f.controlPlane.talosConfigs[m.Name] = config
 					}
 					f.tcp.Spec.ControlPlaneConfig.ControlPlaneConfig = f.controlPlane.talosConfigs[f.machine.Name].Spec
+					f.tcp.Spec.ControlPlaneConfig.ControlPlaneConfig.ConfigRevision = "shared-2"
+					f.tcp.Spec.ControlPlaneConfig.ControlPlaneConfig.StrategicPatchSecretRefs = []cabptv1.SecretKeyReference{{Name: "shared-private", Key: "patch"}}
+					sharedSecret := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "shared-private", Namespace: "default"}, Data: map[string][]byte{"patch": []byte("private-fixture")}}
+					if err := c.Create(ctx, sharedSecret); err != nil {
+						require.True(t, apierrors.IsAlreadyExists(err))
+					}
+					for _, m := range machines {
+						f.tcp.Spec.MachineConfigOverrides = append(f.tcp.Spec.MachineConfigOverrides, controlplanev1.MachineConfigOverride{Name: m.Name, UID: m.UID, Config: &cabptv1.MachineConfigOverlay{ConfigSecretRef: &cabptv1.SecretKeyReference{Name: m.Name + "-baseline", Key: "value"}, ConfigRevision: "node-3", StrategicPatches: []string{"node-first", "node-second"}}, TalosEndpoint: &cabptv1.TalosEndpoint{Address: "unused-egress:50000", ServerName: m.Name + ".example.test", Node: m.Name}})
+						require.NoError(t, c.Create(ctx, &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: m.Name + "-baseline", Namespace: "default"}, Data: map[string][]byte{"value": []byte("private-fixture")}}))
+					}
+					secondDesired, err := f.tcp.Spec.EffectiveTalosConfigSpec(second)
+					require.NoError(t, err)
+					f.controlPlane.talosConfigs[second.Name].Spec = *secondDesired
+					require.NoError(t, c.Update(ctx, f.controlPlane.talosConfigs[second.Name]))
 					require.NoError(t, c.Create(ctx, f.tcp))
+					var observedPods []*corev1.Pod
+					for _, m := range machines {
+						node := &corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: m.Name, Labels: map[string]string{"node-role.kubernetes.io/control-plane": ""}}}
+						require.NoError(t, c.Create(ctx, node))
+						pod := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "kube-apiserver-" + m.Name, Namespace: "kube-system", Labels: map[string]string{"component": "kube-apiserver"}}, Spec: corev1.PodSpec{NodeName: m.Name, Containers: []corev1.Container{{Name: "kube-apiserver", Image: "registry/kube-apiserver:v1.34.0"}}}}
+						require.NoError(t, c.Create(ctx, pod))
+						pod.Status = corev1.PodStatus{Phase: corev1.PodRunning, ContainerStatuses: []corev1.ContainerStatus{{Name: "kube-apiserver", Image: "registry/kube-apiserver:v1.33.0", Ready: true, State: corev1.ContainerState{Running: &corev1.ContainerStateRunning{}}}}}
+						require.NoError(t, c.Status().Update(ctx, pod))
+						observedPods = append(observedPods, pod)
+					}
+					f.reconciler.ClusterCache = clustercache.NewFakeClusterCache(c, client.ObjectKeyFromObject(cluster))
+					f.reconciler.observeControlPlaneVersion(ctx, f.tcp, cluster, collections.ToMachineList(machines).Items)
+					// Persist genuinely observed old version before the owner changes intent.
+					require.Equal(t, "v1.33.0", *f.tcp.Status.Version)
+					require.NoError(t, c.Status().Update(ctx, f.tcp))
 					plan, err := f.reconciler.buildInPlacePlan(f.tcp, f.controlPlane, f.machine)
 					require.NoError(t, err)
-					require.NoError(t, f.reconciler.triggerInPlaceUpdate(ctx, plan))
+					require.NoError(t, f.reconciler.triggerInPlaceUpdate(ctx, f.tcp, cluster, plan))
+					ownerOutput(t, f.reconciler, cluster, f.machine)
+					ownerSecret, frozenPlan, err := f.reconciler.readOwnerPlan(ctx, f.tcp)
+					require.NoError(t, err)
+					_, err = f.reconciler.resumeOwnerPlan(ctx, f.tcp, cluster, ownerSecret, frozenPlan)
+					require.NoError(t, err)
 					require.NoError(t, c.Get(ctx, client.ObjectKeyFromObject(f.machine), f.machine))
 					require.Equal(t, f.tcp.Spec.Version, f.machine.Spec.Version)
 					require.True(t, isUpdatingInPlace(f.machine))
@@ -144,10 +183,14 @@ func TestInPlaceSerializationControllerEnvtest(t *testing.T) {
 					secondInfra := f.controlPlane.infraObjects[second.Name].DeepCopy()
 					observed, err := newControlPlane(ctx, c, &clusterv1.Cluster{ObjectMeta: metav1.ObjectMeta{Namespace: "default"}}, f.tcp, machines)
 					require.NoError(t, err)
-					require.Equal(t, f.tcp.Spec.ControlPlaneConfig.ControlPlaneConfig, observed.talosConfigs[f.machine.Name].Spec)
-					require.NotContains(t, observed.MachinesWithOutdatedRolloutSpec(), f.machine.Name)
+					firstDesired, err := f.tcp.Spec.EffectiveTalosConfigSpec(f.machine)
+					require.NoError(t, err)
+					require.Equal(t, *firstDesired, observed.talosConfigs[f.machine.Name].Spec)
+					outdated, err := observed.MachinesWithOutdatedRolloutSpec()
+					require.NoError(t, err)
+					require.NotContains(t, outdated, f.machine.Name)
 					if allMatched {
-						require.Empty(t, observed.MachinesWithOutdatedRolloutSpec())
+						require.Empty(t, outdated)
 					}
 					dialer := newFakeEtcdDialer()
 					for _, m := range machines {
@@ -156,6 +199,10 @@ func TestInPlaceSerializationControllerEnvtest(t *testing.T) {
 					f.reconciler.etcdDialer = dialer.dial
 					conditions.Set(f.tcp, metav1.Condition{Type: string(controlplanev1.EtcdClusterHealthyCondition), Status: metav1.ConditionTrue, Reason: controlplanev1.EtcdClusterHealthyReason})
 					clusterCache := clustercache.NewFakeClusterCache(c, client.ObjectKeyFromObject(cluster))
+					for _, pod := range observedPods {
+						pod.Status.ContainerStatuses[0].Image = "registry/kube-apiserver:v1.34.0"
+						require.NoError(t, c.Status().Update(ctx, pod))
+					}
 					for range 2 { // a restarted owner reads the same durable pending annotation
 						f.reconciler = &TalosControlPlaneReconciler{Client: c, APIReader: c, Scheme: scheme, Log: ctrl.Log, RuntimeClient: f.caller, etcdDialer: dialer.dial, ClusterCache: clusterCache}
 						list := collections.ToMachineList(machines)
@@ -165,6 +212,17 @@ func TestInPlaceSerializationControllerEnvtest(t *testing.T) {
 						result, err = f.reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(f.tcp)})
 						require.NoError(t, err)
 						require.Positive(t, result.RequeueAfter)
+						require.NoError(t, c.Get(ctx, client.ObjectKeyFromObject(f.machine), f.machine))
+						require.True(t, conditions.IsFalse(f.machine, clusterv1.MachineUpToDateCondition), "spec-matched pending Machine must remain consumer-visible not UpToDate")
+						require.Equal(t, clusterv1.MachineUpToDateUpdatingReason, conditions.Get(f.machine, clusterv1.MachineUpToDateCondition).Reason)
+						require.NoError(t, c.Get(ctx, client.ObjectKeyFromObject(f.tcp), f.tcp))
+						expectedUpToDate := int32(0)
+						if allMatched {
+							expectedUpToDate = 1
+						}
+						require.Equal(t, expectedUpToDate, *f.tcp.Status.UpToDateReplicas, "pending first Machine must not count toward control-plane update completion")
+						require.Equal(t, "v1.33.0", *f.tcp.Status.Version, "new running image must not advance version while pending recovery")
+						require.True(t, conditions.IsFalse(f.tcp, controlplanev1.VersionObservedCondition))
 						require.NoError(t, c.Get(ctx, client.ObjectKeyFromObject(second), second))
 						require.Equal(t, before.Spec, second.Spec)
 						require.Equal(t, before.Annotations, second.Annotations, "no second Machine transaction or deletion")
@@ -180,6 +238,27 @@ func TestInPlaceSerializationControllerEnvtest(t *testing.T) {
 						require.NoError(t, c.List(ctx, &all))
 						require.Len(t, all.Items, len(inventoryBefore.Items), "no replacement or scale-up Machine")
 					}
+					ownerReceipt(t, &ownerFixture{r: f.reconciler, tcp: f.tcp, cluster: cluster, machine: f.machine, config: f.controlPlane.talosConfigs[f.machine.Name]}, ownerSecret, frozenPlan)
+					delete(f.machine.Annotations, clusterv1.UpdateInProgressAnnotation)
+					delete(f.machine.Annotations, runtimev1.PendingHooksAnnotation)
+					require.NoError(t, c.Update(ctx, f.machine))
+					for _, object := range []client.Object{f.controlPlane.talosConfigs[f.machine.Name], f.controlPlane.infraObjects[f.machine.Name]} {
+						require.NoError(t, c.Get(ctx, client.ObjectKeyFromObject(object), object))
+						annotations := object.GetAnnotations()
+						delete(annotations, clusterv1.UpdateInProgressAnnotation)
+						object.SetAnnotations(annotations)
+						require.NoError(t, c.Update(ctx, object))
+					}
+					ownerSecret, frozenPlan, err = f.reconciler.readOwnerPlan(ctx, f.tcp)
+					require.NoError(t, err)
+					_, err = f.reconciler.resumeOwnerPlan(ctx, f.tcp, cluster, ownerSecret, frozenPlan)
+					require.NoError(t, err)
+					require.NoError(t, f.reconciler.updateStatus(ctx, f.tcp, cluster))
+					require.Equal(t, "v1.34.0", *f.tcp.Status.Version)
+					require.True(t, conditions.IsTrue(f.tcp, controlplanev1.VersionObservedCondition))
+					completed := &clusterv1.Machine{}
+					require.NoError(t, c.Get(ctx, client.ObjectKeyFromObject(f.machine), completed))
+					require.True(t, conditions.IsTrue(completed, clusterv1.MachineUpToDateCondition))
 					t.Logf("first=%s desired spec matches, hook pending; second=%s unchanged; gate=%t replicas=%d", f.machine.Name, second.Name, enabled, replicas)
 				})
 			}

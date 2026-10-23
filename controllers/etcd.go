@@ -37,14 +37,14 @@ func (r *TalosControlPlaneReconciler) etcdHealthcheck(ctx context.Context, tcp *
 	for i, machine := range machines {
 		// loop for each machine, the client created has endpoints which point to a single machine
 		if err := func() error {
-			c, err := r.talosconfigForMachines(ctx, tcp, machine)
+			c, rpcCtx, err := r.talosClientForMachine(ctx, tcp, &machine)
 			if err != nil {
 				return err
 			}
 
 			defer c.Close() //nolint:errcheck
 
-			svcs, err := c.ServiceInfo(ctx, service)
+			svcs, err := c.ServiceInfo(rpcCtx, service)
 			if err != nil {
 				return err
 			}
@@ -67,7 +67,7 @@ func (r *TalosControlPlaneReconciler) etcdHealthcheck(ctx context.Context, tcp *
 				}
 			}
 
-			resp, err := c.EtcdMemberList(ctx, &machineapi.EtcdMemberListRequest{})
+			resp, err := c.EtcdMemberList(rpcCtx, &machineapi.EtcdMemberListRequest{})
 			if err != nil {
 				return err
 			}
@@ -159,14 +159,14 @@ func (r *TalosControlPlaneReconciler) auditEtcd(ctx context.Context, tcp *contro
 		return fmt.Errorf("no CP machine which is not being deleted and has node ref")
 	}
 
-	c, err := r.talosconfigForMachines(ctx, tcp, designatedCPMachine)
+	c, rpcCtx, err := r.talosClientForMachine(ctx, tcp, &designatedCPMachine)
 	if err != nil {
 		return err
 	}
 
 	defer c.Close() //nolint:errcheck
 
-	response, err := c.EtcdMemberList(ctx, &machineapi.EtcdMemberListRequest{})
+	response, err := c.EtcdMemberList(rpcCtx, &machineapi.EtcdMemberListRequest{})
 	if err != nil {
 		return fmt.Errorf("error getting etcd members via %q (endpoints %v): %w", designatedCPMachine.Name, c.GetConfigContext().Endpoints, err)
 	}
@@ -192,7 +192,7 @@ func (r *TalosControlPlaneReconciler) auditEtcd(ctx context.Context, tcp *contro
 		if !present {
 			r.Log.Info("found etcd member that doesn't exist as controlplane machine", "member", member)
 
-			if err = r.forceEtcdLeave(ctx, c, member); err != nil {
+			if err = r.forceEtcdLeave(rpcCtx, c, member); err != nil {
 				return fmt.Errorf("error leaving etcd for member %q via machine %q", member, designatedCPMachine.Name)
 			}
 		}

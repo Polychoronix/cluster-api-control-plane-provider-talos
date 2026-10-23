@@ -303,6 +303,90 @@ named `talos-topology-control-plane`, and control plane machines named
 See `config/samples/topology_v1alpha3_clusterclass_with_taloscontrolplanetemplate.yaml` for a ClusterClass / Cluster fragment including workers.
 That sample assumes the referenced infrastructure and worker bootstrap templates already exist.
 
+### Secret-backed inputs and per-Machine Talos endpoints
+
+The matched bootstrap provider's `configSecretRef`, ordered
+`strategicPatchSecretRefs`, `configRevision`, `machineConfig` and `talosEndpoint`
+are preserved in `spec.controlPlaneConfig.controlplane` and templates, including
+served-version conversion. References are `{name, key}` in the TalosConfig's
+namespace. A baseline replaces only the base; shared public and Secret patches
+remain ordered policy. A changed public spec triggers a requested update; use a
+new non-secret `configRevision` for changed bytes in a same-name Secret. There is
+no automatic Secret drift rollout.
+
+Use `spec.machineConfigOverrides` for existing per-node differences. The list is
+keyed by unique Machine `name`, with required exact `uid` and at least one
+`config` (the bootstrap provider's `MachineConfigOverlay`) or `talosEndpoint`:
+
+```yaml
+machineConfigOverrides:
+  - name: example-control-plane-one
+    uid: <actual-existing-Machine-UID>
+    config:
+      configSecretRef: {name: example-node-baseline, key: value}
+      configRevision: reviewed-node-revision
+    talosEndpoint:
+      address: talos-egress.example:50000
+      serverName: example-control-plane-one.example.ts.net
+      node: example-control-plane-one
+```
+
+Namespace is implicit; no cross-namespace input. A reused name with another UID
+is a hard error **before** pre-terminate, etcd or lifecycle actions. Missing entries
+may remain inert before association. New Machines use shared-only inputs, and a
+new name colliding with a pinned entry fails rather than consuming it. An override
+`config` cannot coexist with shared `controlPlaneConfig.controlplane.machineConfig`:
+there is only one per-node slot. Put shared policy in the root public/Secret patch
+fields. Endpoint-only overrides may coexist with the shared slot. Every other
+shared field stays intact in creation, rollout equality and update plans.
+
+Each Machine gets its own imported-mTLS client: `address` is dial transport,
+`serverName` verifies TLS/SNI, and optional `node` routes every RPC through a proxy.
+Different identities are never combined in an endpoint list. Kubernetes node IPs
+are not changed; ordinary provisioning retains node-address fallback when no
+explicit endpoint exists. These input and transport seams **do not authorize
+adoption** or suppress the provider's normal etcd/lifecycle actions. Keep the
+existing observer until a separately approved adoption guard and complete inventory
+are available.
+
+Local tests exercise effective specs, UID/conflict fencing, actual served CRD
+admission and per-node mTLS RPCs (health, etcd, bootstrap and leave/remove), including
+distinct dial/SNI/targets and unchanged imported credentials. This is not a live
+adoption or verified Talos update-completion claim.
+
+### Observed control-plane update status
+
+Machine `UpToDate` is `False` with reason `Updating` while a spec-matched Machine
+has pending/in-progress update markers, core's `Updating=True`, or an observed
+kubelet version different from its desired version. This follows core CAPI and
+KCP's condition contract; spec matching alone is not recovery completion.
+
+Control-plane `status.version` comes only from **every associated non-deleting
+Machine's running and ready `kube-apiserver` container status**, via uncached
+Node/Pod reads through the existing ClusterCache kubeconfig transport. Talos
+v1.14 static Pods use namespace `kube-system`, label `component=kube-apiserver`
+and container name `kube-apiserver`. Machine NodeRef associations must be unique
+and present; providerIDs must match where available. ContainerStatus image tags
+(including version-tag@digest) are observed, not Pod.spec desired images or one
+load-balanced `/version`. Missing/duplicate Pods, denied reads, unready containers
+and opaque/digest-only tags cannot establish a version.
+
+`VersionObserved` is false on incomplete inspection or outstanding update
+completion. A new running image cannot advance the published version while any
+Machine update remains pending. On the first observation pass, an inherited
+status.version lacking this new condition is discarded as unverified legacy
+intent. Complete successful observations establish the minimum and provenance;
+later temporary failures retain only that previously confirmed value and set the
+condition false. This condition is not adoption consent or a durable operation
+receipt. Ordinary fresh-bootstrap UpToDate spec semantics remain unchanged.
+
+Workload credentials need read-only Nodes and `kube-system` Pods access; the
+intended external auth-proxy role already grants these, but deployed permissions
+must be verified by the user. No new credentials, management privileges or
+transport migration are introduced. Isolated owner envtest covers status/replica
+holds and advancement; real token-only TLS smoke proves uncached per-node reads
+and denial without modifying the externally managed Secret.
+
 ### Externally managed Kubernetes kubeconfig
 
 Set `spec.kubeconfig.mode: External` on a `TalosControlPlane` (or
@@ -358,27 +442,98 @@ completion: while any control plane Machine carries the update-in-progress or
 pending `UpdateMachine` annotation, no other update, replacement, scale-up or
 scale-down starts. The hold also applies when every spec already matches, after
 an owner restart, or if the feature gate is disabled during an existing update.
-Do not remove these annotations to force advancement; only the core executor's
-completion handshake releases the hold.
+Do not remove these annotations to force advancement. A namespace-local private
+TCP-owned Secret freezes the exact owner plan before any desired-state write.
+Prepared plans resume only UID/resourceVersion-guarded API writes; missing objects
+are never recreated. Referenced Secret UID/RV/content snapshots must remain
+unchanged through rendering. Current-generation output freshness is frozen before
+Released, then the pending hook is exposed. Restarted Released plans without an
+exact completion witness stop for intervention, never restamp or re-execute.
+
+Private active/ambiguous plans fence pre-terminate/etcd audit, deletion, scale and
+deferred UpToDate/version advancement even when public flags disappear. Actual
+read-only health observations may continue. Completion requires the exact CABPT
+Observed receipt, accepted image intent, original object identities and all three
+core update flags plus pending hook removed. Receipt consumption, owner Consumed
+CAS, matching TalosConfig plan-reference detach and owner-plan UID/RV deletion
+are individually restart-safe. CABPT's journal/receipt remains intact for the next
+transaction; it is never deleted by this provider.
 
 Talos reboot draining is separate from CAPI's Machine deletion drain and volume
 detach pipeline described below. In-place updates keep the Machine and
-InfraMachine; this serialization guarantee does not itself prove reboot recovery,
-image identity, storage health, or durable recovery of a partially written owner
-transaction. Those observations remain required before disruptive rollout testing.
+InfraMachine. Owner recovery proves safe API transaction completion, not physical
+Talos reboot/image/storage recovery; the actual CABPT executor must establish
+those observations before emitting its receipt.
 Physical wipe, including a Robot's original configuration seed, remains manual.
 
-The retained controller regression uses a disposable envtest API server/etcd and
-the real owner trigger with server-side apply. It leaves one hook pending with
-two control plane candidates and checks no second Machine/bootstrap/InfraMachine
-mutation or scale/replacement across gate-on/off, matching/outdated specs, owner
-restart and desired replica counts. It does not install providers into an ambient
-cluster or claim actual core runtime-hook execution:
+The retained controller regressions use disposable envtest API servers/etcd and
+real UID/RV no-create writes. They cover concurrent owners, response loss, stale
+resource versions, source/object replacement, receipt cleanup and a pending hook
+with two control plane candidates across gate-on/off and replica counts. Output
+and completion receipts in these isolated owner tests are explicit fixtures, not
+actual CABPT/core recovery proof. No ambient cluster is used:
 
 ```sh
 KUBEBUILDER_ASSETS=<setup-envtest-binary-directory> go test ./controllers \
-  -run '^(TestReconcileInPlaceUpdates|TestPreflight_HoldsUpdatingMachineEvenWhenExcluded|TestInPlaceSerializationControllerEnvtest)' -count=1 -v
+  -run '^(TestOwner|TestReconcileInPlaceUpdates|TestPreflight_HoldsUpdatingMachineEvenWhenExcluded|TestInPlaceSerializationControllerEnvtest)' -count=1 -v
 ```
+
+The separate opt-in `TestOwnerActualCABPTCoreReceiptCoupling` exercises the
+**actual** CACPPT owner/runtime caller and ClusterCache, a standalone CABPT
+manager, and the core CAPI executor against disposable APIs. It first creates
+fresh bootstrap configurations through the provider, waits for CABPT-generated
+accepted image intent before simulated provisioning/Node readiness, then applies
+a shared revision. It verifies no receipt or peer Apply before recovery, followed
+by the original transaction's Observed/consumed receipt, accepted intent, core
+cleanup, detached plan references and retired owner Secret UID. A new transaction
+for the peer may subsequently occupy the deterministic owner-plan name.
+
+The exercised standalone CABPT source was local commit
+`f19b8fa1629b5a8bcc786ac0de3b0100f88bb809`; the core source/API was CAPI v1.14.2
+commit `5f7d58c9ad647f31bd342bf8de33092c27f7fc38`. These are source observations,
+not published release/image pins. Prepare the actual core binary and its source
+tree, Kubernetes 1.36.2 envtest binaries and the CAPH v1.1.8 CRD directory before
+running; the test does not download assets or use ambient credentials. Build the
+standalone CABPT manager from the matched checkout, one compile at a time:
+
+```sh
+# Run in the matched CABPT checkout.
+GOMAXPROCS=2 CGO_ENABLED=0 GOWORK=off go build -p 1 -o /tmp/cacppt-cabpt-manager .
+
+# Run in this repository. GOWORK is only for unpublished matched local sources;
+# keep that workspace outside the repository and never ship a local-path replace.
+GOMAXPROCS=2 CGO_ENABLED=0 \
+GOWORK=<external-matched-workspace-file> \
+KUBEBUILDER_ASSETS=<k8s-1.36.2-envtest-binary-directory> \
+CAPI_RUNTIME_CORE_BINARY=<absolute-core-v1.14.2-manager-binary> \
+CAPI_RUNTIME_CORE_SOURCE=<absolute-core-v1.14.2-source-root> \
+CAPI_RUNTIME_CAPH_CRDS=<absolute-caph-v1.1.8-crd-directory> \
+CABPT_RUNTIME_BINARY=/tmp/cacppt-cabpt-manager \
+go test -p 1 ./controllers -run '^TestOwnerActualCABPTCoreReceiptCoupling$' \
+  -count=1 -v -timeout=6m
+```
+
+The core source root must contain `core/config/crd/bases` and
+`core/config/webhook/manifests.yaml`; the CAPH directory must contain its actual
+HetznerCluster, HetznerBareMetalMachine and template CRDs. The test launches both
+managers with explicit generated local kubeconfigs and separate TLS certificates,
+leaves `POD_NAMESPACE` unset for CABPT's URL registration fixture, and waits for
+core's real Discovery. Runtime poll cadence is unchanged; the bounded completion
+window accounts for the advertised 30-second retries. Children are stopped before
+API/certificate cleanup. No manual accepted-intent, journal or receipt writes are
+used in this test.
+
+This is a **two-CP, no-reboot cross-provider proof with simulated mTLS/COSI node
+backends**, not a three-node physical rollout, adoption or OS-upgrade proof.
+Fixture-only restart/serialization tests above remain separate. Explicit captured
+owner/manager/context and subprocess logs are checked for private-token redaction;
+framework-global certwatcher logs are not claimed as covered by that capture.
+
+
+Fresh TalosConfig creation records creation-only initial TCP name/UID annotations
+for CABPT's live initial-bootstrap lineage validation. Updates preserve them;
+existing configs/adopted nodes never receive them retrospectively. These markers
+are not adoption consent.
 
 ### Runtime extension namespace scope and settings
 

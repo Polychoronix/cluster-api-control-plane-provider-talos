@@ -29,14 +29,16 @@ type etcdCalls interface {
 	Close() error
 }
 
-// etcdClientFor opens a Talos client scoped to the given machines. Endpoints come from the
-// Machines' status addresses, so nothing here knows about any infrastructure provider.
-func (r *TalosControlPlaneReconciler) etcdClientFor(ctx context.Context, tcp *controlplanev1.TalosControlPlane, machines ...clusterv1.Machine) (etcdCalls, error) {
+// etcdClientFor returns one Machine's client and its explicit target context.
+func (r *TalosControlPlaneReconciler) etcdClientFor(ctx context.Context, tcp *controlplanev1.TalosControlPlane, machine clusterv1.Machine) (etcdCalls, context.Context, error) {
 	if r.etcdDialer != nil {
-		return r.etcdDialer(ctx, tcp, machines...)
+		if _, err := tcp.Spec.EffectiveTalosConfigSpec(&machine); err != nil {
+			return nil, nil, err
+		}
+		c, err := r.etcdDialer(ctx, tcp, machine)
+		return c, ctx, err
 	}
-
-	return r.talosconfigForMachines(ctx, tcp, machines...)
+	return r.talosClientForMachine(ctx, tcp, &machine)
 }
 
 // machineHostName returns the hostname etcd is expected to report for a machine: the NodeRef

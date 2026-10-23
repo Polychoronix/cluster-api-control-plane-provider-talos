@@ -217,14 +217,14 @@ func (r *TalosControlPlaneReconciler) reconcilePreTerminateHookForMachine(
 			errors.Errorf("no healthy control plane machine is available to verify etcd membership"))
 	}
 
-	peerClient, err := r.etcdClientFor(ctx, tcp, *peer)
+	peerClient, peerCtx, err := r.etcdClientFor(ctx, tcp, *peer)
 	if err != nil {
 		return r.failOpenOrRetry(ctx, victim, errors.Wrapf(err, "failed to connect to control plane machine %q", peer.Name))
 	}
 
 	defer peerClient.Close() //nolint:errcheck
 
-	members, err := listEtcdMembers(ctx, peerClient)
+	members, err := listEtcdMembers(peerCtx, peerClient)
 	if err != nil {
 		return r.failOpenOrRetry(ctx, victim, errors.Wrapf(err, "failed to list etcd members via machine %q", peer.Name))
 	}
@@ -261,7 +261,7 @@ func (r *TalosControlPlaneReconciler) reconcilePreTerminateHookForMachine(
 	r.Log.Info("graceful etcd leave failed, removing the member through a peer",
 		"machine", victim.Name, "peer", peer.Name, "error", leaveErr)
 
-	if removeErr := r.forceEtcdLeave(ctx, peerClient, member); removeErr != nil {
+	if removeErr := r.forceEtcdLeave(peerCtx, peerClient, member); removeErr != nil {
 		return r.failOpenOrRetry(ctx, victim, kerrors.NewAggregate([]error{leaveErr, removeErr}))
 	}
 
@@ -413,14 +413,14 @@ func (r *TalosControlPlaneReconciler) markEtcdLeaving(ctx context.Context, machi
 // failure rather than a silent success: an etcd that is no longer running cannot remove itself
 // from the member list, so the caller has to fall back to removing the member through a peer.
 func (r *TalosControlPlaneReconciler) etcdLeaveFromVictim(ctx context.Context, tcp *controlplanev1.TalosControlPlane, victim *clusterv1.Machine) error {
-	c, err := r.etcdClientFor(ctx, tcp, *victim)
+	c, rpcCtx, err := r.etcdClientFor(ctx, tcp, *victim)
 	if err != nil {
 		return err
 	}
 
 	defer c.Close() //nolint:errcheck
 
-	ctx, cancel := context.WithTimeout(ctx, etcdCallTimeout)
+	ctx, cancel := context.WithTimeout(rpcCtx, etcdCallTimeout)
 	defer cancel()
 
 	svcs, err := c.ServiceInfo(ctx, "etcd")
@@ -523,7 +523,7 @@ func (r *TalosControlPlaneReconciler) quorumAfterRemoval(
 
 // etcdHealthyOn reports whether the machine's etcd service reports itself healthy.
 func (r *TalosControlPlaneReconciler) etcdHealthyOn(ctx context.Context, tcp *controlplanev1.TalosControlPlane, machine *clusterv1.Machine) bool {
-	c, err := r.etcdClientFor(ctx, tcp, *machine)
+	c, rpcCtx, err := r.etcdClientFor(ctx, tcp, *machine)
 	if err != nil {
 		r.Log.Info("could not reach machine to check etcd health", "machine", machine.Name, "error", err.Error())
 
@@ -532,7 +532,7 @@ func (r *TalosControlPlaneReconciler) etcdHealthyOn(ctx context.Context, tcp *co
 
 	defer c.Close() //nolint:errcheck
 
-	ctx, cancel := context.WithTimeout(ctx, etcdCallTimeout)
+	ctx, cancel := context.WithTimeout(rpcCtx, etcdCallTimeout)
 	defer cancel()
 
 	svcs, err := c.ServiceInfo(ctx, "etcd")

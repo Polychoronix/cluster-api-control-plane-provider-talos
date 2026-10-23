@@ -47,6 +47,7 @@ import (
 	"sigs.k8s.io/cluster-api/controllers/clustercache"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 
@@ -97,10 +98,21 @@ func newFakeClient(initObjs ...client.Object) client.Client {
 	objects := make([]client.Object, 0, len(initObjs)+1)
 	objects = append(objects, GenericInfrastructureMachineCRD.DeepCopy())
 	objects = append(objects, initObjs...)
+	for _, object := range objects {
+		if object.GetUID() == "" {
+			object.SetUID(types.UID("fixture-" + object.GetName()))
+		}
+	}
 
 	return fake.NewClientBuilder().
 		WithObjects(objects...).
 		WithScheme(fakeScheme).
+		WithInterceptorFuncs(interceptor.Funcs{Create: func(ctx context.Context, c client.WithWatch, object client.Object, options ...client.CreateOption) error {
+			if object.GetUID() == "" {
+				object.SetUID(types.UID("fixture-" + object.GetName()))
+			}
+			return c.Create(ctx, object, options...)
+		}}).
 		WithStatusSubresource(
 			&clusterv1.Cluster{},
 			&clusterv1.Machine{},
