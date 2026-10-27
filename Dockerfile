@@ -58,14 +58,15 @@ FROM scratch AS unit-tests
 COPY --from=unit-tests-run /src/coverage.txt /coverage.txt
 
 FROM --platform=${BUILDPLATFORM} alpine:3.21 AS release-build
-ADD https://github.com/kubernetes-sigs/kustomize/releases/download/kustomize%2Fv4.1.0/kustomize_v4.1.0_linux_amd64.tar.gz .
+ADD --checksum=sha256:77263c66afd04106348bebd019096933e26c0054d5b0ade8265f3426cf440ae6 https://github.com/kubernetes-sigs/kustomize/releases/download/kustomize%2Fv4.1.0/kustomize_v4.1.0_linux_amd64.tar.gz .
 RUN  tar -xf kustomize_v4.1.0_linux_amd64.tar.gz -C /usr/local/bin && rm kustomize_v4.1.0_linux_amd64.tar.gz
 COPY ./config ./config
 COPY ./hack/release-manifests.sh ./hack/release-manifests.sh
 ARG REGISTRY_AND_USERNAME
 ARG NAME
 ARG TAG
-RUN sh hack/release-manifests.sh "${TAG}" "${REGISTRY_AND_USERNAME}/${NAME}:${TAG}" /out
+ARG CONTROLLER_IMAGE
+RUN KUSTOMIZE=/usr/local/bin/kustomize sh hack/release-manifests.sh "${TAG}" "${CONTROLLER_IMAGE:-${REGISTRY_AND_USERNAME}/${NAME}:${TAG}}" /out
 
 FROM scratch AS release
 ARG TAG

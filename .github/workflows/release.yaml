@@ -15,7 +15,6 @@ permissions:
 env:
   REGISTRY: ghcr.io
   SOURCE_URL: ${{ github.server_url }}/${{ github.repository }}
-  REVISION: ${{ github.sha }}
 jobs:
   release:
     runs-on: ubuntu-latest
@@ -26,7 +25,11 @@ jobs:
           fetch-depth: 0
       - name: set-image-namespace
         shell: bash
-        run: echo "USERNAME=${GITHUB_REPOSITORY_OWNER,,}" >> "$GITHUB_ENV"
+        run: |
+          owner=${GITHUB_REPOSITORY_OWNER,,}
+          image="${REGISTRY}/$owner/cluster-api-control-plane-talos-controller:$GITHUB_REF_NAME"
+          revision=$(git rev-parse HEAD)
+          printf 'USERNAME=%s\nCONTROLLER_IMAGE=%s\nREVISION=%s\n' "$owner" "$image" "$revision" >> "$GITHUB_ENV"
       - name: setup-qemu
         uses: docker/setup-qemu-action@v4
       - name: setup-buildx
@@ -42,7 +45,17 @@ jobs:
           make container \
             PUSH=true \
             PLATFORM=linux/amd64,linux/arm64 \
-            TAG="$GITHUB_REF_NAME"
+            TAG="$GITHUB_REF_NAME" \
+            USERNAME="$USERNAME" \
+            CONTROLLER_IMAGE="$CONTROLLER_IMAGE" \
+            BUILD_METADATA=_out/image-metadata.json \
+            SOURCE_URL="$SOURCE_URL" \
+            REVISION="$REVISION"
+      - name: published-image
+        id: published
+        run: |
+          digest=$(jq -er '."containerimage.digest" | select(type == "string" and test("^sha256:[0-9a-f]{64}$"))' _out/image-metadata.json)
+          printf 'image=%s@%s\n' "${CONTROLLER_IMAGE%:*}" "$digest" >> "$GITHUB_OUTPUT"
       - name: release-manifests
         run: |
           make manifests \
@@ -51,7 +64,10 @@ jobs:
           make local-release \
             DEST=./_out \
             PLATFORM=linux/amd64 \
-            TAG="$GITHUB_REF_NAME"
+            TAG="$GITHUB_REF_NAME" \
+            CONTROLLER_IMAGE="${{ steps.published.outputs.image }}" \
+            SOURCE_URL="$SOURCE_URL" \
+            REVISION="$REVISION"
       - name: release
         uses: softprops/action-gh-release@v3
         with:

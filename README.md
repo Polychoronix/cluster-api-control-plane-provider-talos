@@ -143,10 +143,15 @@ already declares the CAPI `v1beta2` contract in provider metadata.
 This fork defaults local image output to
 `ghcr.io/polychoronix/cluster-api-control-plane-talos-controller`. The public-hosted
 `release.yaml` workflow derives the lowercase image namespace from the repository
-owner, carries the actual GitHub source URL, full commit SHA and supplied tag as OCI
-labels, and classifies hyphen prerelease tags as prereleases. It regenerates
-CRD/RBAC manifests before the existing Docker/Kustomize artifact renderer, then
-computes SHA-256/SHA-512 checksums from the actual component and metadata files.
+owner, uses the full checked-out source commit and actual source URL/tag as OCI
+labels, and classifies hyphen prerelease tags as prereleases. Only the image
+`container` target writes `_out/image-metadata.json`; generation and artifact
+stages cannot overwrite that buildx receipt. Immediately after the actual image
+push, the publisher validates `containerimage.digest` and passes the resulting
+`ghcr.io/<lowercase-owner>/cluster-api-control-plane-talos-controller@sha256:...`
+reference as `CONTROLLER_IMAGE` to the existing Docker artifact renderer. It
+regenerates CRD/RBAC manifests and computes SHA-256/SHA-512 checksums from the
+actual rendered components and metadata. The publisher never falls back to a tag.
 The generated Kres tag publisher is removed: this workflow owns tag publication.
 `source.yaml` provides nonpublishing validation on public GitHub-hosted runners.
 The inherited Kres branch/PR workflow remains on the upstream `generic` runner
@@ -159,12 +164,23 @@ bump to the provider's Go 1.26.5 module. It runs in a disposable minimal reposit
 and copies only generated `ci.yaml`, preserving unrelated signing/DCO policy.
 Release assets include actual `SHA256SUMS` and `SHA512SUMS`, not assumed digests.
 
-Local artifact-only example, after the actual matched CABPT dependency is available:
+`CONTROLLER_IMAGE` is shared by native and Docker rendering. A tagged default is
+allowed for local artifact-only rendering; deployable published components must
+use the verified digest from the actual push. The direct shared renderer uses
+checked-in public `config/` inputs without Docker or source generation; the Make
+`release-manifests` target retains its Docker-based `manifests` prerequisite. For
+an artifact-only native render (parameters below are not published assets):
 
-```bash
-make manifests TAG=v0.9.0-craci.1 USERNAME=polychoronix
-make local-release DEST=./_out PLATFORM=linux/amd64 TAG=v0.9.0-craci.1 USERNAME=polychoronix
+```sh
+KUSTOMIZE=kustomize sh hack/release-manifests.sh v0.9.0-craci.1 \
+  ghcr.io/polychoronix/cluster-api-control-plane-talos-controller:v0.9.0-craci.1 _out
 ```
+
+The Docker path uses the same `hack/release-manifests.sh` interface. After separately
+checking source/manifests, pass the explicitly selected image to `make local-release
+DEST=./_out PLATFORM=linux/amd64 TAG="$TAG" CONTROLLER_IMAGE="$CONTROLLER_IMAGE"`.
+The Kustomize 4.1.0 Linux amd64 release archive is pinned by SHA256
+`77263c66afd04106348bebd019096933e26c0054d5b0ade8265f3426cf440ae6`.
 
 Keep the upstream Go module identity and its exact personal-fork `replace` pin.
 The consumer pins the remotely resolved SDK source rather than its former temporary

@@ -11,6 +11,7 @@
 * Add canonical manifest-approved control-plane inventory observation, strict pause fences, exact-controller lifecycle selection and crash-safe aggregate Machine-owner association; keep partial/stale/foreign inventory inactive and preserve imported inputs.
 * Preserve ordinary native retirement for activated inventory through a separate durable idle-operation guard, exact Machine deletion/hook preconditions and narrowly witnessed Consumed cleanup on deleting authorities; retain strict pause and active/ambiguous holds.
 * Align release packaging with the personal GHCR fork, actual source/revision/tag OCI labels, prerelease classification and generated-manifest component checksums; retain the existing 0.9/v1beta2 metadata contract and one tag publisher.
+* Capture target-specific buildx image metadata and thread its validated published digest through the shared native/Docker renderer; retain tagged references only for local rendering, without claiming image publication or altering provider logic.
 
 ## [CAPI Control Plane Provider Talos 0.5.13](https://github.com/talos-systems/cluster-api-control-plane-provider-talos/releases/tag/v0.5.13) (2026-04-27)
 
