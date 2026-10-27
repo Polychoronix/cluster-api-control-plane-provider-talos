@@ -25,6 +25,7 @@ import (
 
 	cosiapi "github.com/cosi-project/runtime/api/v1alpha1"
 	cosiserver "github.com/cosi-project/runtime/pkg/state/protobuf/server"
+	"github.com/go-logr/logr"
 	bootstrapv1 "github.com/siderolabs/cluster-api-bootstrap-provider-talos/api/v1beta1"
 	op "github.com/siderolabs/cluster-api-bootstrap-provider-talos/pkg/updateoperation"
 	cp "github.com/siderolabs/cluster-api-control-plane-provider-talos/api/v1beta1"
@@ -45,13 +46,17 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/tools/events"
 	"k8s.io/utils/ptr"
 	clusterv1 "sigs.k8s.io/cluster-api/api/core/v1beta2"
 	"sigs.k8s.io/cluster-api/util/conditions"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/envtest"
+	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 )
+
+const managementPrivateSentinel = "private-generic-management-source-token"
 
 type managementConsumerFixture struct {
 	r        *TalosControlPlaneReconciler
@@ -63,6 +68,9 @@ type managementConsumerFixture struct {
 	nodes    []corev1.Node
 	reads    atomic.Int32
 	writes   atomic.Int32
+	logs     *ownerRuntimeLogs
+	logger   logr.Logger
+	recorder *events.FakeRecorder
 }
 
 // Every RPC passes strict mTLS and a read-only allowlist. This protocol model
@@ -118,7 +126,10 @@ func newManagementConsumerFixture(t *testing.T, api client.Client, scheme *runti
 	t.Helper()
 	namespace := fmt.Sprintf("observe-%d", count)
 	require.NoError(t, api.Create(t.Context(), &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: namespace}}))
-	f := &managementConsumerFixture{r: &TalosControlPlaneReconciler{Client: api, APIReader: api, Scheme: scheme, Log: ctrl.Log}}
+	logs := &ownerRuntimeLogs{}
+	logger := zap.New(zap.WriteTo(logs))
+	recorder := events.NewFakeRecorder(64)
+	f := &managementConsumerFixture{r: &TalosControlPlaneReconciler{Client: api, APIReader: api, Scheme: scheme, Log: logger, Recorder: recorder}, logs: logs, logger: logger, recorder: recorder}
 	bundle, err := secrets.NewBundle(secrets.NewFixedClock(time.Now()), config.TalosVersion1_14)
 	require.NoError(t, err)
 	input, err := generate.NewInput("cluster", "https://api.example.test:6443", "1.35.0", generate.WithVersionContract(config.TalosVersion1_14), generate.WithSecretsBundle(bundle))
@@ -154,6 +165,7 @@ func newManagementConsumerFixture(t *testing.T, api client.Client, scheme *runti
 		require.NoError(t, err)
 		data, err := provider.EncodeBytes(encoder.WithComments(encoder.CommentsDisabled))
 		require.NoError(t, err)
+		data = append(data, []byte("\n# "+managementPrivateSentinel+"\n")...)
 		n := ownerRuntimeNewNode()
 		n.members = memberNames
 		n.memberID = uint64(i + 1)
@@ -218,9 +230,35 @@ func newManagementConsumerFixture(t *testing.T, api client.Client, scheme *runti
 
 func (f *managementConsumerFixture) reconcile(t *testing.T) {
 	t.Helper()
-	_, err := f.r.Reconcile(t.Context(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(f.tcp)})
+	_, err := f.runReconcile(t)
 	require.NoError(t, err)
 	require.NoError(t, f.r.APIReader.Get(t.Context(), client.ObjectKeyFromObject(f.tcp), f.tcp))
+}
+
+func (f *managementConsumerFixture) runReconcile(t *testing.T) (ctrl.Result, error) {
+	t.Helper()
+	result, err := f.r.Reconcile(ctrl.LoggerInto(t.Context(), f.logger), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(f.tcp)})
+	if err != nil {
+		f.logger.Error(err, "captured returned reconcile error")
+		require.NotContains(t, err.Error(), managementPrivateSentinel)
+	}
+	current := &cp.TalosControlPlane{}
+	if readErr := f.r.APIReader.Get(t.Context(), client.ObjectKeyFromObject(f.tcp), current); readErr == nil {
+		public, marshalErr := json.Marshal(current.Status)
+		require.NoError(t, marshalErr)
+		require.NotContains(t, string(public), managementPrivateSentinel)
+	} else {
+		require.True(t, apierrors.IsNotFound(readErr))
+	}
+	for {
+		select {
+		case event := <-f.recorder.Events:
+			require.NotContains(t, event, managementPrivateSentinel)
+		default:
+			require.NotContains(t, f.logs.text(), managementPrivateSentinel)
+			return result, err
+		}
+	}
 }
 func (f *managementConsumerFixture) preserved(t *testing.T, associated bool) {
 	t.Helper()
@@ -311,10 +349,18 @@ func TestControlPlaneManagementObserveAssociationEnvtest(t *testing.T) {
 			}
 			// Effective policy need not have the live TC's raw representation.
 			// An equivalent desired-only Secret patch must be included in safety pins.
-			equivalent := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "effective-equivalent", Namespace: f.tcp.Namespace}, Data: map[string][]byte{"patch": []byte("machine:\n  type: controlplane\n")}}
+			equivalent := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "effective-equivalent", Namespace: f.tcp.Namespace}, Data: map[string][]byte{"patch": []byte("machine:\n  type: controlplane\n# " + managementPrivateSentinel + "\n")}}
 			require.NoError(t, api.Create(t.Context(), equivalent))
 			f.tcp.Spec.ControlPlaneConfig.ControlPlaneConfig.StrategicPatchSecretRefs = []bootstrapv1.SecretKeyReference{{Name: equivalent.Name, Key: "patch"}}
 			require.NoError(t, api.Update(t.Context(), f.tcp))
+			f.reconcile(t)
+			safePatch := append([]byte(nil), equivalent.Data["patch"]...)
+			equivalent.Data["patch"] = []byte("machine: [\n# " + managementPrivateSentinel + "\n")
+			require.NoError(t, api.Update(t.Context(), equivalent))
+			f.reconcile(t)
+			require.False(t, conditions.IsTrue(f.tcp, bootstrapv1.InventoryVerifiedCondition))
+			equivalent.Data["patch"] = safePatch
+			require.NoError(t, api.Update(t.Context(), equivalent))
 			f.reconcile(t)
 			require.True(t, conditions.IsTrue(f.tcp, bootstrapv1.InventoryVerifiedCondition))
 			require.NotEqual(t, id, f.tcp.Status.Management.Observation.ID)
@@ -409,7 +455,7 @@ func TestControlPlaneManagementObserveAssociationEnvtest(t *testing.T) {
 			f.tcp.Spec.Management.Approval.ObservationID = newID
 			require.NoError(t, api.Update(t.Context(), f.tcp))
 			f.r.Client = &associationAckLossClient{Client: api, remaining: 1}
-			_, err := f.r.Reconcile(t.Context(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(f.tcp)})
+			_, err := f.runReconcile(t)
 			require.ErrorContains(t, err, "compare-and-swap")
 			status, err := op.ReadManagementStatus(t.Context(), api, tcpManagementAuthority(f.tcp))
 			require.NoError(t, err)
@@ -420,7 +466,7 @@ func TestControlPlaneManagementObserveAssociationEnvtest(t *testing.T) {
 			require.Nil(t, metav1.GetControllerOf(f.machines[1]))
 			// An unhealthy remaining member stops crash recovery before further ownership writes.
 			f.nodes[len(f.nodes)-1].Status.Conditions[0].Status = corev1.ConditionFalse
-			f.r = &TalosControlPlaneReconciler{Client: api, APIReader: api, Scheme: scheme, Log: ctrl.Log}
+			f.r = &TalosControlPlaneReconciler{Client: api, APIReader: api, Scheme: scheme, Log: f.logger, Recorder: f.recorder}
 			f.reconcile(t)
 			status, err = op.ReadManagementStatus(t.Context(), api, tcpManagementAuthority(f.tcp))
 			require.NoError(t, err)
@@ -444,13 +490,15 @@ func TestControlPlaneManagementObserveAssociationEnvtest(t *testing.T) {
 			f.tcp.Status.Management = nil
 			require.NoError(t, api.Update(t.Context(), f.tcp))
 			require.NoError(t, api.Status().Update(t.Context(), f.tcp))
-			_, err = f.r.Reconcile(t.Context(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(f.tcp)})
+			_, err = f.runReconcile(t)
 			require.ErrorContains(t, err, "retained record")
 			require.Zero(t, f.writes.Load())
 			require.NoError(t, api.Get(t.Context(), client.ObjectKeyFromObject(f.tcp), f.tcp))
 			f.tcp.Spec.Management = approved
 			require.NoError(t, api.Update(t.Context(), f.tcp))
 			exerciseManagementRetirement(t, api, f)
+			require.NotEmpty(t, f.logs.text(), "actual scoped Reconcile logs must be captured")
+			require.NotContains(t, f.logs.text(), managementPrivateSentinel)
 			t.Log("actual provider Reconcile: full generic API inventory + workload TLS Node reads + strict Talos mTLS/COSI/etcd observation; hard pauses, source freshness/stale approval, owner CAS response loss/restart/health hold and aggregate activation; no live node/core lifecycle provisioning claim")
 		})
 	}
@@ -468,7 +516,7 @@ func exerciseManagementRetirement(t *testing.T, api client.Client, f *management
 	require.NoError(t, api.Get(t.Context(), client.ObjectKeyFromObject(m), m))
 	m.Annotations = map[string]string{clusterv1.UpdateInProgressAnnotation: ""}
 	require.NoError(t, api.Update(t.Context(), m))
-	_, err := f.r.Reconcile(t.Context(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(f.tcp)})
+	_, err := f.runReconcile(t)
 	require.ErrorContains(t, err, "active Machine update")
 	require.NoError(t, api.Get(t.Context(), client.ObjectKeyFromObject(m), m))
 	require.True(t, m.DeletionTimestamp.IsZero())
@@ -478,7 +526,7 @@ func exerciseManagementRetirement(t *testing.T, api client.Client, f *management
 	require.NoError(t, api.Get(t.Context(), client.ObjectKeyFromObject(last), last))
 	last.Annotations = map[string]string{clusterv1.PausedAnnotation: ""}
 	require.NoError(t, api.Update(t.Context(), last))
-	_, err = f.r.Reconcile(t.Context(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(f.tcp)})
+	_, err = f.runReconcile(t)
 	require.NoError(t, err)
 	require.NoError(t, api.Get(t.Context(), client.ObjectKeyFromObject(m), m))
 	require.True(t, m.DeletionTimestamp.IsZero(), "paused retirement may not delete any member")
@@ -488,7 +536,7 @@ func exerciseManagementRetirement(t *testing.T, api client.Client, f *management
 	// new healthy-running snapshot or perform a Talos membership/reset operation.
 	f.nodes[len(f.nodes)-1].Status.Conditions[0].Status = corev1.ConditionFalse
 	for range 3 {
-		_, err = f.r.Reconcile(t.Context(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(f.tcp)})
+		_, err = f.runReconcile(t)
 		require.NoError(t, err)
 	}
 	for _, machine := range f.machines {
