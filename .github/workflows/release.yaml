@@ -14,9 +14,8 @@ permissions:
   packages: write
 env:
   REGISTRY: ghcr.io
-  # The Makefile defaults this with ?=, so an ambient USERNAME in the environment would
-  # otherwise win and publish the release under the wrong org.
-  USERNAME: sidero-community
+  SOURCE_URL: ${{ github.server_url }}/${{ github.repository }}
+  REVISION: ${{ github.sha }}
 jobs:
   release:
     runs-on: ubuntu-latest
@@ -25,6 +24,9 @@ jobs:
         uses: actions/checkout@v7
         with:
           fetch-depth: 0
+      - name: set-image-namespace
+        shell: bash
+        run: echo "USERNAME=${GITHUB_REPOSITORY_OWNER,,}" >> "$GITHUB_ENV"
       - name: setup-qemu
         uses: docker/setup-qemu-action@v4
       - name: setup-buildx
@@ -40,17 +42,20 @@ jobs:
           make container \
             PUSH=true \
             PLATFORM=linux/amd64,linux/arm64 \
-            TAG=${{ github.ref_name }}
+            TAG="$GITHUB_REF_NAME"
       - name: release-manifests
         run: |
+          make manifests \
+            PLATFORM=linux/amd64 \
+            TAG="$GITHUB_REF_NAME"
           make local-release \
             DEST=./_out \
             PLATFORM=linux/amd64 \
-            TAG=${{ github.ref_name }}
+            TAG="$GITHUB_REF_NAME"
       - name: release
         uses: softprops/action-gh-release@v3
         with:
           files: _out/control-plane-talos/${{ github.ref_name }}/*
           generate_release_notes: true
           draft: false
-          prerelease: false
+          prerelease: ${{ contains(github.ref_name, '-') }}

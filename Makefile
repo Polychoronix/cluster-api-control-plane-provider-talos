@@ -1,15 +1,17 @@
 REGISTRY ?= ghcr.io
-USERNAME ?= sidero-community
+USERNAME ?= polychoronix
 SHA ?= $(shell git describe --match=none --always --abbrev=8 --dirty)
 TAG ?= $(shell git describe --tag --always --dirty)
 BRANCH ?= $(shell git rev-parse --abbrev-ref HEAD)
+SOURCE_URL ?= https://github.com/Polychoronix/cluster-api-control-plane-provider-talos
+REVISION ?= $(shell git rev-parse HEAD)
 REGISTRY_AND_USERNAME := $(REGISTRY)/$(USERNAME)
 NAME := cluster-api-control-plane-talos-controller
 WITH_RACE ?= false
 CGO_ENABLED = 0
 TESTPKGS ?= ./controllers/...
 
-KRES_IMAGE ?= ghcr.io/siderolabs/kres:latest
+KRES_REVISION := 9076602b5cebabca7c82d6ed83c29806b07aa516
 
 CONTROLLER_GEN_VERSION ?= v0.21.0
 CONVERSION_GEN_VERSION ?= v0.36.0
@@ -45,6 +47,8 @@ COMMON_ARGS += --build-arg=CGO_ENABLED="$(CGO_ENABLED)"
 COMMON_ARGS += --build-arg=TESTPKGS="$(TESTPKGS)"
 COMMON_ARGS += --build-arg=CONTROLLER_GEN_VERSION=$(CONTROLLER_GEN_VERSION)
 COMMON_ARGS += --build-arg=CONVERSION_GEN_VERSION=$(CONVERSION_GEN_VERSION)
+COMMON_ARGS += --build-arg=SOURCE_URL=$(SOURCE_URL)
+COMMON_ARGS += --build-arg=REVISION=$(REVISION)
 
 all: manifests container
 
@@ -100,6 +104,10 @@ container: generate ## Build the container image.
 manifests: ## Generate manifests (e.g. CRD, RBAC, etc.).
 	@$(MAKE) local-$@ DEST=./ PLATFORM=linux/amd64
 
+.PHONY: release-manifests
+release-manifests: manifests ## Render release artifacts and checksums with the shared script.
+	@sh hack/release-manifests.sh "$(TAG)" "$(REGISTRY_AND_USERNAME)/$(NAME):$(TAG)" "$(ARTIFACTS)"
+
 .PHONY: release-notes
 release-notes: ## Create the release notes.
 	@mkdir -p $(ARTIFACTS)
@@ -150,5 +158,4 @@ check-dirty: ## Verifies that source tree is not dirty
 
 .PHONY: rekres
 rekres:
-	@docker pull $(KRES_IMAGE)
-	@docker run --rm --net=host --user $(shell id -u):$(shell id -g) -v $(PWD):/src -w /src -e GITHUB_TOKEN $(KRES_IMAGE)
+	@KRES_REVISION=$(KRES_REVISION) sh hack/rekres.sh
