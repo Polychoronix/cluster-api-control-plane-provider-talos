@@ -17,6 +17,8 @@ import (
 	cp "github.com/siderolabs/cluster-api-control-plane-provider-talos/api/v1beta1"
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
+	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -42,7 +44,7 @@ type ownerFixture struct {
 	update  *inPlacePlan
 }
 
-func newOwnerFixture(t *testing.T, api client.Client) *ownerFixture {
+func newOwnerFixture(t *testing.T, api client.Client, namespaces ...string) *ownerFixture {
 	t.Helper()
 	scheme := runtime.NewScheme()
 	require.NoError(t, corev1.AddToScheme(scheme))
@@ -57,6 +59,21 @@ func newOwnerFixture(t *testing.T, api client.Client) *ownerFixture {
 			return c.Create(ctx, object, opts...)
 		}}).Build()
 	}
+	require.NoError(t, apiextensionsv1.AddToScheme(scheme))
+	require.NoError(t, apiextensionsv1.AddToScheme(api.Scheme()))
+	crd := &apiextensionsv1.CustomResourceDefinition{}
+	if err := api.Get(t.Context(), client.ObjectKey{Name: "testmachines.infrastructure.cluster.x-k8s.io"}, crd); apierrors.IsNotFound(err) {
+		preserve := true
+		crd = &apiextensionsv1.CustomResourceDefinition{ObjectMeta: metav1.ObjectMeta{Name: "testmachines.infrastructure.cluster.x-k8s.io", Labels: map[string]string{"cluster.x-k8s.io/v1beta2": "v1beta2"}}, Spec: apiextensionsv1.CustomResourceDefinitionSpec{Group: "infrastructure.cluster.x-k8s.io", Scope: apiextensionsv1.NamespaceScoped, Names: apiextensionsv1.CustomResourceDefinitionNames{Plural: "testmachines", Singular: "testmachine", Kind: "TestMachine"}, Versions: []apiextensionsv1.CustomResourceDefinitionVersion{{Name: "v1beta2", Served: true, Storage: true, Schema: &apiextensionsv1.CustomResourceValidation{OpenAPIV3Schema: &apiextensionsv1.JSONSchemaProps{Type: "object", XPreserveUnknownFields: &preserve}}}}}}
+		require.NoError(t, api.Create(t.Context(), crd))
+	} else {
+		require.NoError(t, err)
+	}
+	namespace := "default"
+	if len(namespaces) > 0 {
+		namespace = namespaces[0]
+		require.NoError(t, api.Create(t.Context(), &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: namespace}}))
+	}
 	cluster := &clusterv1.Cluster{ObjectMeta: metav1.ObjectMeta{Name: "owner-cluster", Namespace: "default", UID: "cluster-uid"}, Spec: clusterv1.ClusterSpec{ControlPlaneEndpoint: clusterv1.APIEndpoint{Host: "localhost", Port: 6443}}}
 	tcp := &cp.TalosControlPlane{ObjectMeta: metav1.ObjectMeta{Name: "owner", Namespace: "default", UID: "owner-uid", Labels: map[string]string{clusterv1.ClusterNameLabel: cluster.Name}, OwnerReferences: []metav1.OwnerReference{*metav1.NewControllerRef(cluster, clusterv1.GroupVersion.WithKind("Cluster"))}, Finalizers: []string{cp.TalosControlPlaneFinalizer}}, Spec: cp.TalosControlPlaneSpec{Version: "v1.34.0", ControlPlaneConfig: cp.ControlPlaneConfig{ControlPlaneConfig: bootstrapv1.TalosConfigSpec{GenerateType: "controlplane", ConfigSecretRef: &bootstrapv1.SecretKeyReference{Name: "owner-baseline", Key: "value"}, ConfigRevision: "next"}}}}
 	machine := &clusterv1.Machine{ObjectMeta: metav1.ObjectMeta{Name: "owner-machine", Namespace: "default", UID: "machine-uid", Labels: map[string]string{clusterv1.ClusterNameLabel: cluster.Name, clusterv1.MachineControlPlaneLabel: ""}, OwnerReferences: []metav1.OwnerReference{*metav1.NewControllerRef(tcp, cp.GroupVersion.WithKind("TalosControlPlane"))}}, Spec: clusterv1.MachineSpec{ClusterName: cluster.Name, Version: "v1.33.0", InfrastructureRef: clusterv1.ContractVersionedObjectReference{APIGroup: "infrastructure.cluster.x-k8s.io", Kind: "TestMachine", Name: "owner-machine"}, Bootstrap: clusterv1.Bootstrap{ConfigRef: clusterv1.ContractVersionedObjectReference{APIGroup: bootstrapv1.GroupVersion.Group, Kind: "TalosConfig", Name: "owner-machine"}}}}
@@ -64,6 +81,7 @@ func newOwnerFixture(t *testing.T, api client.Client) *ownerFixture {
 	config.Spec.ConfigRevision = "previous"
 	infra := &unstructured.Unstructured{Object: map[string]any{"apiVersion": "infrastructure.cluster.x-k8s.io/v1beta2", "kind": "TestMachine", "metadata": map[string]any{"name": machine.Name, "namespace": "default", "uid": "infra-uid"}, "spec": map[string]any{"identity": "preserved"}}}
 	for _, object := range []client.Object{cluster, tcp, machine, config, infra, &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "owner-baseline", Namespace: "default", UID: "source-uid"}, Data: map[string][]byte{"value": []byte("private-baseline-fixture")}}} {
+		object.SetNamespace(namespace)
 		require.NoError(t, api.Create(t.Context(), object))
 	}
 	// Rebind owners after API-server identity allocation in real envtest.
@@ -73,6 +91,16 @@ func newOwnerFixture(t *testing.T, api client.Client) *ownerFixture {
 	require.NoError(t, api.Update(t.Context(), machine))
 	config.OwnerReferences = []metav1.OwnerReference{*metav1.NewControllerRef(machine, clusterv1.GroupVersion.WithKind("Machine"))}
 	require.NoError(t, api.Update(t.Context(), config))
+	infra.SetOwnerReferences(config.OwnerReferences)
+	require.NoError(t, api.Update(t.Context(), infra))
+	// Positive native bootstrap lineage is a fixture here, not a renderer claim.
+	intent, err := op.EncodeAcceptedIntent(op.AcceptedIntent{MachineUID: machine.UID, TalosConfigUID: config.UID})
+	require.NoError(t, err)
+	seedName := machine.Name + "-original-seed"
+	seed := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: seedName, Namespace: machine.Namespace, OwnerReferences: []metav1.OwnerReference{*metav1.NewControllerRef(config, bootstrapv1.GroupVersion.WithKind("TalosConfig"))}}, Data: map[string][]byte{"value": []byte("fixture-bootstrap"), op.AcceptedIntentKey: intent}}
+	require.NoError(t, api.Create(t.Context(), seed))
+	machine.Spec.Bootstrap.DataSecretName = &seedName
+	require.NoError(t, api.Update(t.Context(), machine))
 	r := &TalosControlPlaneReconciler{Client: api, APIReader: api, Scheme: scheme, Log: ctrl.Log}
 	plane := &ControlPlane{TCP: tcp, Cluster: cluster, Machines: collections.FromMachines(machine), infraObjects: map[string]*unstructured.Unstructured{machine.Name: infra}, talosConfigs: map[string]*bootstrapv1.TalosConfig{machine.Name: config}}
 	update, err := r.buildInPlacePlan(tcp, plane, machine)

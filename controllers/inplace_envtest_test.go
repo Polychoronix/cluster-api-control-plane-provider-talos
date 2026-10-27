@@ -146,6 +146,10 @@ func TestInPlaceSerializationControllerEnvtest(t *testing.T) {
 					f.controlPlane.talosConfigs[second.Name].Spec = *secondDesired
 					require.NoError(t, c.Update(ctx, f.controlPlane.talosConfigs[second.Name]))
 					require.NoError(t, c.Create(ctx, f.tcp))
+					for _, m := range machines {
+						m.OwnerReferences = []metav1.OwnerReference{*metav1.NewControllerRef(f.tcp, controlplanev1.GroupVersion.WithKind("TalosControlPlane"))}
+						require.NoError(t, c.Update(ctx, m))
+					}
 					var observedPods []*corev1.Pod
 					for _, m := range machines {
 						node := &corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: m.Name, Labels: map[string]string{"node-role.kubernetes.io/control-plane": ""}}}

@@ -21,6 +21,7 @@ const (
 	TalosControlPlaneFinalizerLegacy = "talos.controlplane.cluster.x-k8s.io"
 )
 
+// +kubebuilder:validation:XValidation:rule="!has(self.controlplane.management)",message="control-plane approval belongs to TalosControlPlane.spec.management"
 type ControlPlaneConfig struct {
 	ControlPlaneConfig cabptv1.TalosConfigSpec `json:"controlplane"`
 }
@@ -170,6 +171,11 @@ type TalosControlPlaneSpec struct {
 	// +optional
 	MachineConfigOverrides []MachineConfigOverride `json:"machineConfigOverrides,omitempty"`
 
+	// Management declares read-only inventory observation and exact manifest approval.
+	// Control-plane children use this single authority, not independent approvals.
+	// +optional
+	Management *cabptv1.ManagementSpec `json:"management,omitempty"`
+
 	// The RolloutStrategy to use to replace control plane machines with
 	// new ones.
 	// +optional
@@ -273,6 +279,10 @@ type TalosControlPlaneStatus struct {
 	// ObservedGeneration is the latest generation observed by the controller.
 	// +optional
 	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
+
+	// Management identifies the observed and activated inventory without private data.
+	// +optional
+	Management *cabptv1.ManagementStatus `json:"management,omitempty"`
 
 	// Bootstrapped denotes whether any nodes received bootstrap request
 	// which is required to start etcd and Kubernetes components in Talos.

@@ -16,6 +16,7 @@ const (
 	TalosControlPlaneFinalizer = "talos.controlplane.cluster.x-k8s.io"
 )
 
+// +kubebuilder:validation:XValidation:rule="!has(self.controlplane.management)",message="control-plane approval belongs to TalosControlPlane.spec.management"
 type ControlPlaneConfig struct {
 	// Deprecated: starting from cacppt v0.4.0 provider doesn't use init configs.
 	InitConfig         cabptv1.TalosConfigSpec `json:"init,omitempty"`
@@ -91,6 +92,10 @@ type TalosControlPlaneSpec struct {
 	// +listMapKey=name
 	// +optional
 	MachineConfigOverrides []MachineConfigOverride `json:"machineConfigOverrides,omitempty"`
+
+	// Management uses the bootstrap provider's common inventory approval contract.
+	// +optional
+	Management *cabptv1.ManagementSpec `json:"management,omitempty"`
 
 	// The RolloutStrategy to use to replace control plane machines with
 	// new ones.
@@ -206,6 +211,9 @@ type TalosControlPlaneStatus struct {
 	// ObservedGeneration is the latest generation observed by the controller.
 	// +optional
 	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
+
+	// +optional
+	Management *cabptv1.ManagementStatus `json:"management,omitempty"`
 
 	// Conditions defines current service state of the KubeadmControlPlane.
 	// +optional

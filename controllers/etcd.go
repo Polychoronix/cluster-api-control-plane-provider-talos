@@ -126,11 +126,20 @@ func (r *TalosControlPlaneReconciler) auditEtcd(ctx context.Context, tcp *contro
 
 	defer cancel()
 
-	machines, err := r.getControlPlaneMachinesForCluster(ctx, cluster)
+	machines, err := r.getControlPlaneMachinesForTCP(ctx, cluster, tcp)
 	if err != nil {
 		return err
 	}
 
+	// An unassociated CP Machine is not an etcd orphan. Do not audit/remove
+	// members while labelled inventory belongs to another owner or no owner.
+	inventory, err := r.listControlPlaneMachinesForCluster(ctx, cluster)
+	if err != nil {
+		return err
+	}
+	if len(inventory.Items) != len(machines.Items) {
+		return fmt.Errorf("control-plane inventory contains Machines not controlled by this TalosControlPlane")
+	}
 	if len(machines.Items) == 0 {
 		return nil
 	}

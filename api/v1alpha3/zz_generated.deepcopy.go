@@ -225,6 +225,11 @@ func (in *TalosControlPlaneSpec) DeepCopyInto(out *TalosControlPlaneSpec) {
 			(*in)[i].DeepCopyInto(&(*out)[i])
 		}
 	}
+	if in.Management != nil {
+		in, out := &in.Management, &out.Management
+		*out = new(apiv1alpha3.ManagementSpec)
+		(*in).DeepCopyInto(*out)
+	}
 	if in.RolloutStrategy != nil {
 		in, out := &in.RolloutStrategy, &out.RolloutStrategy
 		*out = new(RolloutStrategy)
@@ -255,6 +260,11 @@ func (in *TalosControlPlaneStatus) DeepCopyInto(out *TalosControlPlaneStatus) {
 		in, out := &in.FailureMessage, &out.FailureMessage
 		*out = new(string)
 		**out = **in
+	}
+	if in.Management != nil {
+		in, out := &in.Management, &out.Management
+		*out = new(apiv1alpha3.ManagementStatus)
+		(*in).DeepCopyInto(*out)
 	}
 	if in.Conditions != nil {
 		in, out := &in.Conditions, &out.Conditions

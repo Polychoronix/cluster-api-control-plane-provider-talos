@@ -18,6 +18,7 @@ import (
 	"github.com/gobuffalo/flect"
 	"github.com/pkg/errors"
 	bootstrapv1 "github.com/siderolabs/cluster-api-bootstrap-provider-talos/api/v1beta1"
+	op "github.com/siderolabs/cluster-api-bootstrap-provider-talos/pkg/updateoperation"
 	"github.com/siderolabs/crypto/tls"
 	"github.com/siderolabs/crypto/x509"
 	"github.com/siderolabs/gen/xslices"
@@ -103,6 +104,20 @@ func newFakeClient(initObjs ...client.Object) client.Client {
 			object.SetUID(types.UID("fixture-" + object.GetName()))
 		}
 	}
+	for _, object := range objects {
+		owners := object.GetOwnerReferences()
+		for i := range owners {
+			if owners[i].Kind != "Cluster" || owners[i].UID != "" {
+				continue
+			}
+			for _, candidate := range objects {
+				if cluster, ok := candidate.(*clusterv1.Cluster); ok && cluster.Namespace == object.GetNamespace() && cluster.Name == owners[i].Name {
+					owners[i].UID = cluster.UID
+				}
+			}
+		}
+		object.SetOwnerReferences(owners)
+	}
 
 	return fake.NewClientBuilder().
 		WithObjects(objects...).
@@ -119,6 +134,56 @@ func newFakeClient(initObjs ...client.Object) client.Client {
 			&controlplanev1.TalosControlPlane{},
 		).
 		Build()
+}
+
+// These legacy controller unit tests simulate the Machine/bootstrap controllers.
+// The fixture creates settled owners and accepted seed identity explicitly; this
+// is not evidence of real CABPT rendering, Node readiness or generic adoption.
+func settleFakeBootstrap(ctx context.Context, c client.Client, m *clusterv1.Machine) error {
+	if !m.Spec.Bootstrap.ConfigRef.IsDefined() {
+		m.Spec.Bootstrap.ConfigRef = clusterv1.ContractVersionedObjectReference{APIGroup: bootstrapv1.GroupVersion.Group, Kind: "TalosConfig", Name: m.Name}
+	}
+	tc := &bootstrapv1.TalosConfig{}
+	key := client.ObjectKey{Namespace: m.Namespace, Name: m.Spec.Bootstrap.ConfigRef.Name}
+	if err := c.Get(ctx, key, tc); err != nil {
+		controller := metav1.GetControllerOf(m)
+		if controller == nil {
+			return fmt.Errorf("fixture Machine has no TCP controller")
+		}
+		tcp := &controlplanev1.TalosControlPlane{}
+		if err := c.Get(ctx, client.ObjectKey{Namespace: m.Namespace, Name: controller.Name}, tcp); err != nil {
+			return err
+		}
+		spec, err := tcp.Spec.EffectiveTalosConfigSpec(m)
+		if err != nil {
+			return err
+		}
+		tc = &bootstrapv1.TalosConfig{ObjectMeta: metav1.ObjectMeta{Namespace: key.Namespace, Name: key.Name}, Spec: *spec}
+		if err := c.Create(ctx, tc); err != nil {
+			return err
+		}
+	}
+	owner := metav1.GetControllerOf(tc)
+	if owner == nil || owner.UID != m.UID {
+		tc.OwnerReferences = append(tc.OwnerReferences, *metav1.NewControllerRef(m, clusterv1.GroupVersion.WithKind("Machine")))
+		if err := c.Update(ctx, tc); err != nil {
+			return err
+		}
+	}
+	if m.Spec.Bootstrap.DataSecretName != nil {
+		return nil
+	}
+	intent, err := op.EncodeAcceptedIntent(op.AcceptedIntent{MachineUID: m.UID, TalosConfigUID: tc.UID})
+	if err != nil {
+		return err
+	}
+	name := m.Name + "-fixture-seed"
+	seed := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: m.Namespace, OwnerReferences: []metav1.OwnerReference{*metav1.NewControllerRef(tc, bootstrapv1.GroupVersion.WithKind("TalosConfig"))}}, Data: map[string][]byte{"value": []byte("fixture-generated-bootstrap"), op.AcceptedIntentKey: intent}}
+	if err := c.Create(ctx, seed); err != nil {
+		return err
+	}
+	m.Spec.Bootstrap.DataSecretName = &name
+	return c.Update(ctx, m)
 }
 
 func createSecrets(ctx context.Context, obj client.Client, cluster *clusterv1.Cluster, secretsBundle *secrets.Bundle, machineAddress string) error {

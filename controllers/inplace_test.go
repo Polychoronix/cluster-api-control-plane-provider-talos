@@ -97,7 +97,7 @@ func newInPlaceFixture(t *testing.T, machineAnnotations map[string]string) *inPl
 	require.NoError(t, controlplanev1.AddToScheme(scheme))
 
 	tcp := &controlplanev1.TalosControlPlane{
-		ObjectMeta: metav1.ObjectMeta{Name: "tcp", Namespace: "default"},
+		ObjectMeta: metav1.ObjectMeta{Name: "tcp", Namespace: "default", UID: "tcp-uid"},
 		Spec: controlplanev1.TalosControlPlaneSpec{
 			Version: "v1.34.0",
 			ControlPlaneConfig: controlplanev1.ControlPlaneConfig{
@@ -108,9 +108,11 @@ func newInPlaceFixture(t *testing.T, machineAnnotations map[string]string) *inPl
 
 	machine := &clusterv1.Machine{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:        "machine-1",
-			Namespace:   "default",
-			Annotations: machineAnnotations,
+			Name:            "machine-1",
+			Namespace:       "default",
+			UID:             "machine-uid",
+			OwnerReferences: []metav1.OwnerReference{*metav1.NewControllerRef(tcp, controlplanev1.GroupVersion.WithKind("TalosControlPlane"))},
+			Annotations:     machineAnnotations,
 		},
 		Spec: clusterv1.MachineSpec{ClusterName: "test", Version: "v1.33.0"},
 		Status: clusterv1.MachineStatus{
@@ -119,7 +121,7 @@ func newInPlaceFixture(t *testing.T, machineAnnotations map[string]string) *inPl
 	}
 
 	talosConfig := &cabptv1.TalosConfig{
-		ObjectMeta: metav1.ObjectMeta{Name: "machine-1", Namespace: "default"},
+		ObjectMeta: metav1.ObjectMeta{Name: "machine-1", Namespace: "default", UID: "config-uid", OwnerReferences: []metav1.OwnerReference{*metav1.NewControllerRef(machine, clusterv1.GroupVersion.WithKind("Machine"))}},
 		Spec:       cabptv1.TalosConfigSpec{GenerateType: "controlplane"},
 	}
 

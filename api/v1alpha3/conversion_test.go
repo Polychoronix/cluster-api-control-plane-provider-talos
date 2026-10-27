@@ -199,3 +199,22 @@ func TestExternalKubeconfigSpecRoundTrip(t *testing.T) {
 		require.Equal(t, hub.Spec.Kubeconfig, back.Spec.Kubeconfig)
 	}
 }
+
+func TestManagementAuthorityRoundTripAndDeepCopy(t *testing.T) {
+	management := &cabptv1beta1.ManagementSpec{Mode: cabptv1beta1.ManagementModeManaged, InventoryRevision: "inventory-1", Machines: []cabptv1beta1.MachineIdentityReference{{Name: "cp-one", UID: "uid-one"}, {Name: "cp-two", UID: "uid-two"}}, Approval: &cabptv1beta1.ObservationApproval{Revision: "inventory-1", ObservationID: "opaque-consent"}}
+	status := &cabptv1beta1.ManagementStatus{Observation: &cabptv1beta1.ObservationStatus{Revision: "inventory-1", ID: "opaque-consent", ObservedAt: metav1.NewTime(time.Date(2026, 10, 23, 12, 0, 0, 0, time.UTC))}, ActivatedRevision: "inventory-1"}
+	hub := &cpv1beta1.TalosControlPlane{Spec: cpv1beta1.TalosControlPlaneSpec{Management: management}, Status: cpv1beta1.TalosControlPlaneStatus{Management: status}}
+	spoke := &TalosControlPlane{}
+	require.NoError(t, spoke.ConvertFrom(hub))
+	back := &cpv1beta1.TalosControlPlane{}
+	require.NoError(t, spoke.ConvertTo(back))
+	require.Equal(t, management, back.Spec.Management)
+	require.Equal(t, status, back.Status.Management)
+	copy := hub.DeepCopy()
+	copy.Spec.Management.Machines[0].UID = "changed"
+	copy.Spec.Management.Approval.ObservationID = "changed"
+	copy.Status.Management.Observation.ID = "changed"
+	require.Equal(t, "uid-one", string(hub.Spec.Management.Machines[0].UID))
+	require.Equal(t, "opaque-consent", hub.Spec.Management.Approval.ObservationID)
+	require.Equal(t, "opaque-consent", hub.Status.Management.Observation.ID)
+}

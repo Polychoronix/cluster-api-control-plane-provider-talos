@@ -26,6 +26,8 @@ import (
 	kjson "k8s.io/apimachinery/pkg/util/json"
 	clusterv1 "sigs.k8s.io/cluster-api/api/core/v1beta2"
 	runtimev1 "sigs.k8s.io/cluster-api/api/runtime/v1beta2"
+	"sigs.k8s.io/cluster-api/controllers/external"
+	"sigs.k8s.io/cluster-api/util/annotations"
 	"sigs.k8s.io/cluster-api/util/conditions"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
@@ -195,6 +197,9 @@ func (r *TalosControlPlaneReconciler) liveOwnerSnapshots(ctx context.Context, tc
 	if !sameIdentity(liveTCP, plan.Intent.Owner) || !reflect.DeepEqual(liveTCP.Spec, plan.TCP) || liveCluster.UID != plan.ClusterUID || !reflect.DeepEqual(liveCluster.Spec, plan.ClusterSpec) || !reflect.DeepEqual(liveCluster.OwnerReferences, plan.ClusterOwners) {
 		return nil, nil, ownerError("live frozen owner intent changed")
 	}
+	if annotations.IsPaused(liveCluster, liveTCP) {
+		return nil, nil, op.ErrManagementPaused
+	}
 	return liveTCP, liveCluster, nil
 }
 
@@ -220,6 +225,24 @@ func (r *TalosControlPlaneReconciler) ownerObjects(ctx context.Context, tcp *con
 		}
 		if !found || !inventory.Items[i].DeletionTimestamp.IsZero() {
 			return nil, nil, nil, ownerError("control-plane inventory changed")
+		}
+		member := &inventory.Items[i]
+		if _, paused := member.Annotations[clusterv1.PausedAnnotation]; paused {
+			return nil, nil, nil, op.ErrManagementPaused
+		}
+		memberConfig := &bootstrapv1.TalosConfig{}
+		if r.APIReader.Get(ctx, client.ObjectKey{Namespace: member.Namespace, Name: member.Spec.Bootstrap.ConfigRef.Name}, memberConfig) != nil {
+			return nil, nil, nil, ownerError("control-plane bootstrap lookup")
+		}
+		if _, paused := memberConfig.Annotations[clusterv1.PausedAnnotation]; paused {
+			return nil, nil, nil, op.ErrManagementPaused
+		}
+		memberInfra, err := external.GetObjectFromContractVersionedRef(ctx, r.APIReader, member.Spec.InfrastructureRef, member.Namespace)
+		if err != nil {
+			return nil, nil, nil, ownerError("control-plane infrastructure lookup")
+		}
+		if _, paused := memberInfra.GetAnnotations()[clusterv1.PausedAnnotation]; paused {
+			return nil, nil, nil, op.ErrManagementPaused
 		}
 	}
 	machine := &clusterv1.Machine{}
@@ -344,7 +367,7 @@ func (r *TalosControlPlaneReconciler) resumeOwnerPlan(ctx context.Context, tcp *
 	if err != nil {
 		return true, err
 	}
-	if !tcp.DeletionTimestamp.IsZero() || !cluster.DeletionTimestamp.IsZero() {
+	if plan.Intent.Phase != op.OwnerConsumed && (!tcp.DeletionTimestamp.IsZero() || !cluster.DeletionTimestamp.IsZero()) {
 		return true, ownerError("owner deletion during update")
 	}
 	if plan.Intent.Phase == op.OwnerPrepared {

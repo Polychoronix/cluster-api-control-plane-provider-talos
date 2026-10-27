@@ -168,4 +168,4 @@ require (
 // replace. In-place control plane updates only work against the forked CABPT: this provider
 // stamps UpdateInProgressAnnotation, and the forked bootstrap provider is what reacts to it
 // by regenerating the machine configuration. Upstream is no longer developed.
-replace github.com/siderolabs/cluster-api-bootstrap-provider-talos => github.com/Polychoronix/cluster-api-bootstrap-provider-talos v0.0.0-20261022141228-f19b8fa1629b
+replace github.com/siderolabs/cluster-api-bootstrap-provider-talos => github.com/Polychoronix/cluster-api-bootstrap-provider-talos v0.0.0-20261027162536-2422f48957b8

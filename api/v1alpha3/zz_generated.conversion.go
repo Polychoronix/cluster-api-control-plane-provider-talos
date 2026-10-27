@@ -116,6 +116,16 @@ func RegisterConversions(s *runtime.Scheme) error {
 	}); err != nil {
 		return err
 	}
+	if err := s.AddConversionFunc((*apiv1alpha3.ManagementSpec)(nil), (*apiv1beta1.ManagementSpec)(nil), func(a, b interface{}, scope conversion.Scope) error {
+		return Convert_v1alpha3_ManagementSpec_To_v1beta1_ManagementSpec(a.(*apiv1alpha3.ManagementSpec), b.(*apiv1beta1.ManagementSpec), scope)
+	}); err != nil {
+		return err
+	}
+	if err := s.AddConversionFunc((*apiv1alpha3.ManagementStatus)(nil), (*apiv1beta1.ManagementStatus)(nil), func(a, b interface{}, scope conversion.Scope) error {
+		return Convert_v1alpha3_ManagementStatus_To_v1beta1_ManagementStatus(a.(*apiv1alpha3.ManagementStatus), b.(*apiv1beta1.ManagementStatus), scope)
+	}); err != nil {
+		return err
+	}
 	if err := s.AddConversionFunc((*apiv1alpha3.TalosConfigSpec)(nil), (*apiv1beta1.TalosConfigSpec)(nil), func(a, b interface{}, scope conversion.Scope) error {
 		return Convert_v1alpha3_TalosConfigSpec_To_v1beta1_TalosConfigSpec(a.(*apiv1alpha3.TalosConfigSpec), b.(*apiv1beta1.TalosConfigSpec), scope)
 	}); err != nil {
@@ -128,6 +138,16 @@ func RegisterConversions(s *runtime.Scheme) error {
 	}
 	if err := s.AddConversionFunc((*TalosControlPlaneStatus)(nil), (*v1beta1.TalosControlPlaneStatus)(nil), func(a, b interface{}, scope conversion.Scope) error {
 		return Convert_v1alpha3_TalosControlPlaneStatus_To_v1beta1_TalosControlPlaneStatus(a.(*TalosControlPlaneStatus), b.(*v1beta1.TalosControlPlaneStatus), scope)
+	}); err != nil {
+		return err
+	}
+	if err := s.AddConversionFunc((*apiv1beta1.ManagementSpec)(nil), (*apiv1alpha3.ManagementSpec)(nil), func(a, b interface{}, scope conversion.Scope) error {
+		return Convert_v1beta1_ManagementSpec_To_v1alpha3_ManagementSpec(a.(*apiv1beta1.ManagementSpec), b.(*apiv1alpha3.ManagementSpec), scope)
+	}); err != nil {
+		return err
+	}
+	if err := s.AddConversionFunc((*apiv1beta1.ManagementStatus)(nil), (*apiv1alpha3.ManagementStatus)(nil), func(a, b interface{}, scope conversion.Scope) error {
+		return Convert_v1beta1_ManagementStatus_To_v1alpha3_ManagementStatus(a.(*apiv1beta1.ManagementStatus), b.(*apiv1alpha3.ManagementStatus), scope)
 	}); err != nil {
 		return err
 	}
@@ -364,6 +384,15 @@ func autoConvert_v1alpha3_TalosControlPlaneSpec_To_v1beta1_TalosControlPlaneSpec
 		return err
 	}
 	out.MachineConfigOverrides = *(*[]v1beta1.MachineConfigOverride)(unsafe.Pointer(&in.MachineConfigOverrides))
+	if in.Management != nil {
+		in, out := &in.Management, &out.Management
+		*out = new(apiv1beta1.ManagementSpec)
+		if err := Convert_v1alpha3_ManagementSpec_To_v1beta1_ManagementSpec(*in, *out, s); err != nil {
+			return err
+		}
+	} else {
+		out.Management = nil
+	}
 	out.RolloutStrategy = (*v1beta1.RolloutStrategy)(unsafe.Pointer(in.RolloutStrategy))
 	if err := Convert_v1alpha3_KubeconfigSpec_To_v1beta1_KubeconfigSpec(&in.Kubeconfig, &out.Kubeconfig, s); err != nil {
 		return err
@@ -380,6 +409,15 @@ func autoConvert_v1beta1_TalosControlPlaneSpec_To_v1alpha3_TalosControlPlaneSpec
 		return err
 	}
 	out.MachineConfigOverrides = *(*[]MachineConfigOverride)(unsafe.Pointer(&in.MachineConfigOverrides))
+	if in.Management != nil {
+		in, out := &in.Management, &out.Management
+		*out = new(apiv1alpha3.ManagementSpec)
+		if err := Convert_v1beta1_ManagementSpec_To_v1alpha3_ManagementSpec(*in, *out, s); err != nil {
+			return err
+		}
+	} else {
+		out.Management = nil
+	}
 	out.RolloutStrategy = (*RolloutStrategy)(unsafe.Pointer(in.RolloutStrategy))
 	if err := Convert_v1beta1_KubeconfigSpec_To_v1alpha3_KubeconfigSpec(&in.Kubeconfig, &out.Kubeconfig, s); err != nil {
 		return err
@@ -398,6 +436,15 @@ func autoConvert_v1alpha3_TalosControlPlaneStatus_To_v1beta1_TalosControlPlaneSt
 	// WARNING: in.FailureReason requires manual conversion: does not exist in peer-type
 	// WARNING: in.FailureMessage requires manual conversion: does not exist in peer-type
 	out.ObservedGeneration = in.ObservedGeneration
+	if in.Management != nil {
+		in, out := &in.Management, &out.Management
+		*out = new(apiv1beta1.ManagementStatus)
+		if err := Convert_v1alpha3_ManagementStatus_To_v1beta1_ManagementStatus(*in, *out, s); err != nil {
+			return err
+		}
+	} else {
+		out.Management = nil
+	}
 	if in.Conditions != nil {
 		in, out := &in.Conditions, &out.Conditions
 		*out = make([]v1.Condition, len(*in))
@@ -434,6 +481,15 @@ func autoConvert_v1beta1_TalosControlPlaneStatus_To_v1alpha3_TalosControlPlaneSt
 	// WARNING: in.UpToDateReplicas requires manual conversion: does not exist in peer-type
 	out.Version = (*string)(unsafe.Pointer(in.Version))
 	out.ObservedGeneration = in.ObservedGeneration
+	if in.Management != nil {
+		in, out := &in.Management, &out.Management
+		*out = new(apiv1alpha3.ManagementStatus)
+		if err := Convert_v1beta1_ManagementStatus_To_v1alpha3_ManagementStatus(*in, *out, s); err != nil {
+			return err
+		}
+	} else {
+		out.Management = nil
+	}
 	out.Bootstrapped = in.Bootstrapped
 	return nil
 }
