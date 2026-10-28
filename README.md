@@ -92,13 +92,15 @@ Historical upstream Talos compatibility declarations:
 
 ### Selecting an approved published provider source
 
-The matched SDK source `2422f48957b8a25c9072162c7c4f9501c4267dc2` is now published
-and credential-free Go resolution selected `v0.0.0-20261027162536-2422f48957b8`.
-This is a source/dependency checkpoint, not a published release tag or image.
-Installation remains gated on actual approved matched provider release assets and
-verified access/checksums. `0.9.0-craci.1` remains a candidate family, not release availability.
+The personal bootstrap fork has published
+[`v0.9.0-craci.1`](https://github.com/Polychoronix/cluster-api-bootstrap-provider-talos/releases/tag/v0.9.0-craci.1)
+from `84b9dcc2be13191c9545a2c627335b0f28e67128`. Credential-free GoProxy/sumdb
+resolution selected that exact tag and source commit. This consumer now requires
+the same version, preserving the upstream Go module path through its personal-fork
+`replace`. **The matching control-plane release is not published yet.** Installation
+remains gated on both approved provider releases and verified asset checksums/access.
 
-After publication, select the **same explicit approved release version** from the
+After the matching control-plane release is published, select the **same explicit approved release version** from the
 [personal bootstrap fork releases](https://github.com/Polychoronix/cluster-api-bootstrap-provider-talos/releases)
 and [personal control-plane fork releases](https://github.com/Polychoronix/cluster-api-control-plane-provider-talos/releases).
 Verify the version-specific component assets, provider metadata, checksums and actual
@@ -135,10 +137,11 @@ and a separately verified infrastructure provider for the required native lifecy
 
 ### Personal-fork prerelease packaging
 
-The candidate matched provider family is **0.9.0-craci.1**; `v0.9.0-craci.1` below
-is an example, not an existing tag, published image or authorization to release.
-The actual tag is supplied at the user-approved release checkpoint. Series 0.9
-already declares the CAPI `v1beta2` contract in provider metadata.
+The paired provider version is **v0.9.0-craci.1**: the bootstrap prerelease exists,
+but the matching control-plane tag, image and release assets remain unpublished.
+The consumer source dependency cutover must pass eligible source CI before the
+user creates its matching release tag. Series 0.9 already declares the CAPI
+`v1beta2` contract in provider metadata.
 
 This fork defaults local image output to
 `ghcr.io/polychoronix/cluster-api-control-plane-talos-controller`. The public-hosted
@@ -183,13 +186,13 @@ The Kustomize 4.1.0 Linux amd64 release archive is pinned by SHA256
 `77263c66afd04106348bebd019096933e26c0054d5b0ade8265f3426cf440ae6`.
 
 Keep the upstream Go module identity and its exact personal-fork `replace` pin.
-The consumer pins the remotely resolved SDK source rather than its former temporary
-workspace. Do not ship a filesystem replacement or fall back to the older public SDK.
+The consumer pins the remotely resolved released SDK tag rather than its former
+temporary workspace. Do not ship a filesystem replacement or fall back to the older public SDK.
 A tag push starts
 the publication workflow; neither local rendering nor these examples authorize
 that push. A public source repository does not prove GHCR package visibility:
 the user must verify package visibility/access and actual CI/image/checksum outputs
-before recording an immutable deployment digest. No image or digest is claimed here.
+before recording an immutable deployment digest. No consumer image or digest is claimed here.
 
 CACPPT plays the following role in the whole Cluster API architecture:
 

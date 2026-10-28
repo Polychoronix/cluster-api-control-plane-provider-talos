@@ -12,8 +12,8 @@ github.com/Masterminds/sprig/v3 v3.3.0 h1:mQh0Yrg1XPo6vjYXgtf5OtijNAKJRNcTdOOGZe
 github.com/Masterminds/sprig/v3 v3.3.0/go.mod h1:Zy1iXRYNqNLUolqCpL4uhk6SHUMAOSCzdgBfDb35Lz0=
 github.com/NYTimes/gziphandler v1.1.1 h1:ZUDjpQae29j0ryrS0u/B8HZfJBtBQHjqw2rQ2cqUQ3I=
 github.com/NYTimes/gziphandler v1.1.1/go.mod h1:n/CVRwUEOgIxrgPvAQhUUr9oeUtvrhMomdKFjzJNB0c=
-github.com/Polychoronix/cluster-api-bootstrap-provider-talos v0.0.0-20261027162536-2422f48957b8 h1:CPLUfVY3g92vndQXarpgbV53W2hh4EA6562swoJ0Z9o=
-github.com/Polychoronix/cluster-api-bootstrap-provider-talos v0.0.0-20261027162536-2422f48957b8/go.mod h1:jAuezKHwHh+kdxVF4+KFI5QfYG6IPJqH7z+dKsu9yQA=
+github.com/Polychoronix/cluster-api-bootstrap-provider-talos v0.9.0-craci.1 h1:FGMDm5DhNF7aLhCgMFejWOYffr1DpYV32LYFABU1mZQ=
+github.com/Polychoronix/cluster-api-bootstrap-provider-talos v0.9.0-craci.1/go.mod h1:jAuezKHwHh+kdxVF4+KFI5QfYG6IPJqH7z+dKsu9yQA=
 github.com/ProtonMail/go-crypto v1.4.1 h1:9RfcZHqEQUvP8RzecWEUafnZVtEvrBVL9BiF67IQOfM=
 github.com/ProtonMail/go-crypto v1.4.1/go.mod h1:e1OaTyu5SYVrO9gKOEhTc+5UcXtTUa+P3uLudwcgPqo=
 github.com/ProtonMail/gopenpgp/v3 v3.4.1 h1:K7uUhSHSJxORZ+RuHpilTT6S4MA2whCRlXNwLqd0+ys=

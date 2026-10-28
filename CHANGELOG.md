@@ -2,12 +2,13 @@
 
 ### Changes
 
+* Match the CABPT requirement and personal-fork replacement to its published `v0.9.0-craci.1` prerelease at `84b9dcc2be13191c9545a2c627335b0f28e67128`; refresh verified module checksums. The matching control-plane release remains unpublished.
 * Preserve matched CABPT Secret-backed inputs and explicit Talos endpoints across control-plane APIs, templates and conversions; add namespace-local, Machine-name/UID-pinned overrides.
 * Honor runtime-extension namespace selectors and request settings, retaining fail-closed in-place error handling.
 * Support read-only externally managed standard Cluster kubeconfigs without credential rotation or ownership changes.
 * Recover frozen private control-plane owner plans with no-create UID/resourceVersion writes and exact completion receipt consumption; fence concurrent lifecycle and premature status advancement.
 * Report completed control-plane versions from running per-node API-server observations, not desired Machine versions.
-* Add isolated owner restart/CAS regressions and actual two-CP CABPT/core subprocess coupling with simulated Talos backends. Dependency publication and live adoption remain separately gated.
+* Add isolated owner restart/CAS regressions and actual two-CP CABPT/core subprocess coupling with simulated Talos backends. Matched control-plane release publication and live adoption remain separately gated.
 * Add canonical manifest-approved control-plane inventory observation, strict pause fences, exact-controller lifecycle selection and crash-safe aggregate Machine-owner association; keep partial/stale/foreign inventory inactive and preserve imported inputs.
 * Preserve ordinary native retirement for activated inventory through a separate durable idle-operation guard, exact Machine deletion/hook preconditions and narrowly witnessed Consumed cleanup on deleting authorities; retain strict pause and active/ambiguous holds.
 * Align release packaging with the personal GHCR fork, actual source/revision/tag OCI labels, prerelease classification and generated-manifest component checksums; retain the existing 0.9/v1beta2 metadata contract and one tag publisher.

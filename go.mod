@@ -13,7 +13,7 @@ require (
 	github.com/onsi/gomega v1.42.1
 	github.com/pkg/errors v0.9.1
 	github.com/siderolabs/capi-utils v0.0.0-20260203103127-995e8c672207
-	github.com/siderolabs/cluster-api-bootstrap-provider-talos v0.7.0-alpha.1.0.20260417161437-1f98f533c6f6
+	github.com/siderolabs/cluster-api-bootstrap-provider-talos v0.9.0-craci.1
 	github.com/siderolabs/crypto v0.6.5
 	github.com/siderolabs/gen v0.8.7
 	github.com/siderolabs/go-retry v0.3.3
@@ -168,4 +168,4 @@ require (
 // replace. In-place control plane updates only work against the forked CABPT: this provider
 // stamps UpdateInProgressAnnotation, and the forked bootstrap provider is what reacts to it
 // by regenerating the machine configuration. Upstream is no longer developed.
-replace github.com/siderolabs/cluster-api-bootstrap-provider-talos => github.com/Polychoronix/cluster-api-bootstrap-provider-talos v0.0.0-20261027162536-2422f48957b8
+replace github.com/siderolabs/cluster-api-bootstrap-provider-talos => github.com/Polychoronix/cluster-api-bootstrap-provider-talos v0.9.0-craci.1
