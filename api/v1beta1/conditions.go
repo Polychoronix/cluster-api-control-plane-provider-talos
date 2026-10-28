@@ -16,6 +16,12 @@ const (
 )
 
 const (
+	// VersionObservedCondition reports complete running per-node API-server
+	// observations with no in-place completion handshake still outstanding.
+	VersionObservedCondition = "VersionObserved"
+)
+
+const (
 	// MachinesBootstrapped is tracking control planes bootstrap status.
 	MachinesBootstrapped = "MachinesBootstrapped"
 
@@ -122,4 +128,10 @@ const (
 
 	// MachinesCreatedReason documents that the TalosControlPlane has successfully created all required machines.
 	MachinesCreatedReason = "MachinesCreated"
+)
+
+const (
+	// KubeconfigAvailableCondition reports validation of external Kubernetes access.
+	// API reachability is separately observed by the Available condition.
+	KubeconfigAvailableCondition = "KubeconfigAvailable"
 )

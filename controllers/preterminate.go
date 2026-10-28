@@ -7,6 +7,7 @@ package controllers
 import (
 	"context"
 	"fmt"
+	"reflect"
 	"sort"
 	"strings"
 	"time"
@@ -14,12 +15,15 @@ import (
 	"github.com/pkg/errors"
 	machineapi "github.com/siderolabs/talos/pkg/machinery/api/machine"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	kerrors "k8s.io/apimachinery/pkg/util/errors"
 	clusterv1 "sigs.k8s.io/cluster-api/api/core/v1beta2"
+	runtimev1 "sigs.k8s.io/cluster-api/api/runtime/v1beta2"
 	"sigs.k8s.io/cluster-api/util/conditions"
 	"sigs.k8s.io/cluster-api/util/patch"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	controlplanev1 "github.com/siderolabs/cluster-api-control-plane-provider-talos/api/v1beta1"
 )
@@ -217,14 +221,14 @@ func (r *TalosControlPlaneReconciler) reconcilePreTerminateHookForMachine(
 			errors.Errorf("no healthy control plane machine is available to verify etcd membership"))
 	}
 
-	peerClient, err := r.etcdClientFor(ctx, tcp, *peer)
+	peerClient, peerCtx, err := r.etcdClientFor(ctx, tcp, *peer)
 	if err != nil {
 		return r.failOpenOrRetry(ctx, victim, errors.Wrapf(err, "failed to connect to control plane machine %q", peer.Name))
 	}
 
 	defer peerClient.Close() //nolint:errcheck
 
-	members, err := listEtcdMembers(ctx, peerClient)
+	members, err := listEtcdMembers(peerCtx, peerClient)
 	if err != nil {
 		return r.failOpenOrRetry(ctx, victim, errors.Wrapf(err, "failed to list etcd members via machine %q", peer.Name))
 	}
@@ -261,7 +265,7 @@ func (r *TalosControlPlaneReconciler) reconcilePreTerminateHookForMachine(
 	r.Log.Info("graceful etcd leave failed, removing the member through a peer",
 		"machine", victim.Name, "peer", peer.Name, "error", leaveErr)
 
-	if removeErr := r.forceEtcdLeave(ctx, peerClient, member); removeErr != nil {
+	if removeErr := r.forceEtcdLeave(peerCtx, peerClient, member); removeErr != nil {
 		return r.failOpenOrRetry(ctx, victim, kerrors.NewAggregate([]error{leaveErr, removeErr}))
 	}
 
@@ -310,19 +314,51 @@ func (r *TalosControlPlaneReconciler) releasePreTerminateHook(ctx context.Contex
 	if !hooked && !anchored {
 		return nil
 	}
-
-	patchHelper, err := patch.NewHelper(machine, r.Client)
-	if err != nil {
-		return err
+	if r.APIReader == nil || machine.UID == "" {
+		return fmt.Errorf("Machine identity reader required for hook release")
+	}
+	live := &clusterv1.Machine{}
+	if err := r.APIReader.Get(ctx, client.ObjectKeyFromObject(machine), live); err != nil {
+		if apierrors.IsNotFound(err) {
+			return nil
+		}
+		return fmt.Errorf("live Machine hook lookup failed")
+	}
+	if live.UID != machine.UID || !reflect.DeepEqual(live.OwnerReferences, machine.OwnerReferences) {
+		return fmt.Errorf("Machine hook identity changed")
+	}
+	if !reflect.DeepEqual(live.Spec, machine.Spec) || !reflect.DeepEqual(live.Status.NodeRef, machine.Status.NodeRef) || !reflect.DeepEqual(live.Status.Addresses, machine.Status.Addresses) || live.DeletionTimestamp.IsZero() != machine.DeletionTimestamp.IsZero() {
+		return fmt.Errorf("Machine hook release-relevant state changed")
+	}
+	for _, key := range []string{clusterv1.UpdateInProgressAnnotation, runtimev1.PendingHooksAnnotation, clusterv1.PausedAnnotation} {
+		before, beforeSet := machine.Annotations[key]
+		now, nowSet := live.Annotations[key]
+		if beforeSet != nowSet || before != now {
+			return fmt.Errorf("Machine hook update/pause state changed")
+		}
+	}
+	beforeUpdating := conditions.Get(machine, clusterv1.MachineUpdatingCondition)
+	nowUpdating := conditions.Get(live, clusterv1.MachineUpdatingCondition)
+	if (beforeUpdating == nil) != (nowUpdating == nil) || (beforeUpdating != nil && (beforeUpdating.Status != nowUpdating.Status || beforeUpdating.Reason != nowUpdating.Reason)) {
+		return fmt.Errorf("Machine hook update completion state changed")
 	}
 
-	delete(machine.Annotations, PreTerminateHookCleanupAnnotation)
-	delete(machine.Annotations, etcdCleanupObservedAtAnnotation)
-
+	var changes []map[string]any
+	for _, key := range []string{PreTerminateHookCleanupAnnotation, etcdCleanupObservedAtAnnotation} {
+		if _, present := live.Annotations[key]; present {
+			changes = append(changes, map[string]any{"op": "remove", "path": "/metadata/annotations/" + escapeJSONPointer(key)})
+		}
+	}
 	r.Log.Info("releasing pre-terminate hook", "machine", machine.Name)
-
-	return errors.Wrapf(patchHelper.Patch(ctx, machine),
-		"failed to release the pre-terminate hook on machine %q", machine.Name)
+	if len(changes) == 0 {
+		*machine = *live
+		return nil
+	}
+	if err := r.ownerPatch(ctx, live, changes...); err != nil {
+		return errors.Wrapf(err, "failed to release the pre-terminate hook on machine %q", machine.Name)
+	}
+	*machine = *live
+	return nil
 }
 
 // stampPreTerminateHooks adopts owned control plane Machines that predate the hook.
@@ -413,14 +449,14 @@ func (r *TalosControlPlaneReconciler) markEtcdLeaving(ctx context.Context, machi
 // failure rather than a silent success: an etcd that is no longer running cannot remove itself
 // from the member list, so the caller has to fall back to removing the member through a peer.
 func (r *TalosControlPlaneReconciler) etcdLeaveFromVictim(ctx context.Context, tcp *controlplanev1.TalosControlPlane, victim *clusterv1.Machine) error {
-	c, err := r.etcdClientFor(ctx, tcp, *victim)
+	c, rpcCtx, err := r.etcdClientFor(ctx, tcp, *victim)
 	if err != nil {
 		return err
 	}
 
 	defer c.Close() //nolint:errcheck
 
-	ctx, cancel := context.WithTimeout(ctx, etcdCallTimeout)
+	ctx, cancel := context.WithTimeout(rpcCtx, etcdCallTimeout)
 	defer cancel()
 
 	svcs, err := c.ServiceInfo(ctx, "etcd")
@@ -523,7 +559,7 @@ func (r *TalosControlPlaneReconciler) quorumAfterRemoval(
 
 // etcdHealthyOn reports whether the machine's etcd service reports itself healthy.
 func (r *TalosControlPlaneReconciler) etcdHealthyOn(ctx context.Context, tcp *controlplanev1.TalosControlPlane, machine *clusterv1.Machine) bool {
-	c, err := r.etcdClientFor(ctx, tcp, *machine)
+	c, rpcCtx, err := r.etcdClientFor(ctx, tcp, *machine)
 	if err != nil {
 		r.Log.Info("could not reach machine to check etcd health", "machine", machine.Name, "error", err.Error())
 
@@ -532,7 +568,7 @@ func (r *TalosControlPlaneReconciler) etcdHealthyOn(ctx context.Context, tcp *co
 
 	defer c.Close() //nolint:errcheck
 
-	ctx, cancel := context.WithTimeout(ctx, etcdCallTimeout)
+	ctx, cancel := context.WithTimeout(rpcCtx, etcdCallTimeout)
 	defer cancel()
 
 	svcs, err := c.ServiceInfo(ctx, "etcd")

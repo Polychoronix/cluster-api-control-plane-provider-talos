@@ -19,6 +19,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/events"
 	"k8s.io/utils/ptr"
 	clusterv1 "sigs.k8s.io/cluster-api/api/core/v1beta2"
@@ -221,6 +222,7 @@ func newPTMachine(tcp *controlplanev1.TalosControlPlane, name string, mutators .
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      name,
 			Namespace: "default",
+			UID:       types.UID(name + "-uid"),
 			Labels: map[string]string{
 				clusterv1.ClusterNameLabel:         "test",
 				clusterv1.MachineControlPlaneLabel: "",

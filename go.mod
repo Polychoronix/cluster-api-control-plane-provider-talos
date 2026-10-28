@@ -4,6 +4,7 @@ go 1.26.5
 
 require (
 	github.com/coreos/go-semver v0.3.1
+	github.com/cosi-project/runtime v1.16.3
 	github.com/evanphx/json-patch v5.9.11+incompatible
 	github.com/go-logr/logr v1.4.4
 	github.com/gobuffalo/flect v1.0.3
@@ -12,7 +13,7 @@ require (
 	github.com/onsi/gomega v1.42.1
 	github.com/pkg/errors v0.9.1
 	github.com/siderolabs/capi-utils v0.0.0-20260203103127-995e8c672207
-	github.com/siderolabs/cluster-api-bootstrap-provider-talos v0.7.0-alpha.1.0.20260417161437-1f98f533c6f6
+	github.com/siderolabs/cluster-api-bootstrap-provider-talos v0.9.0-craci.1
 	github.com/siderolabs/crypto v0.6.5
 	github.com/siderolabs/gen v0.8.7
 	github.com/siderolabs/go-retry v0.3.3
@@ -40,6 +41,7 @@ require (
 require (
 	cel.dev/expr v0.25.2 // indirect
 	github.com/MakeNowJust/heredoc v1.0.0 // indirect
+	github.com/Masterminds/semver/v3 v3.4.0 // indirect
 	github.com/NYTimes/gziphandler v1.1.1 // indirect
 	github.com/ProtonMail/go-crypto v1.4.1 // indirect
 	github.com/ProtonMail/gopenpgp/v3 v3.4.1 // indirect
@@ -53,7 +55,6 @@ require (
 	github.com/cloudflare/circl v1.6.4 // indirect
 	github.com/containerd/go-cni v1.1.13 // indirect
 	github.com/containernetworking/cni v1.3.0 // indirect
-	github.com/cosi-project/runtime v1.16.3 // indirect
 	github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc // indirect
 	github.com/distribution/reference v0.6.0 // indirect
 	github.com/drone/envsubst/v2 v2.0.0-20210730161058-179042472c46 // indirect
@@ -64,6 +65,7 @@ require (
 	github.com/fsnotify/fsnotify v1.9.0 // indirect
 	github.com/fxamacker/cbor/v2 v2.9.1 // indirect
 	github.com/gertd/go-pluralize v0.2.1 // indirect
+	github.com/ghodss/yaml v1.0.0 // indirect
 	github.com/go-logr/stdr v1.2.2 // indirect
 	github.com/go-logr/zapr v1.3.0 // indirect
 	github.com/go-openapi/jsonpointer v1.0.0 // indirect
@@ -83,6 +85,7 @@ require (
 	github.com/go-viper/mapstructure/v2 v2.5.0 // indirect
 	github.com/google/cel-go v0.31.0 // indirect
 	github.com/google/gnostic-models v0.7.1 // indirect
+	github.com/google/go-containerregistry v0.21.7 // indirect
 	github.com/google/go-github/v82 v82.0.0 // indirect
 	github.com/google/go-querystring v1.2.0 // indirect
 	github.com/grpc-ecosystem/grpc-gateway/v2 v2.30.0 // indirect
@@ -151,6 +154,7 @@ require (
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20260810153831-ec0a7760b754 // indirect
 	gopkg.in/evanphx/json-patch.v4 v4.13.0 // indirect
 	gopkg.in/inf.v0 v0.9.1 // indirect
+	gopkg.in/yaml.v2 v2.4.0 // indirect
 	k8s.io/apiserver v0.36.3 // indirect
 	k8s.io/cluster-bootstrap v0.36.3 // indirect
 	k8s.io/kube-openapi v0.0.0-20260330154417-16be699c7b31 // indirect
@@ -164,4 +168,4 @@ require (
 // replace. In-place control plane updates only work against the forked CABPT: this provider
 // stamps UpdateInProgressAnnotation, and the forked bootstrap provider is what reacts to it
 // by regenerating the machine configuration. Upstream is no longer developed.
-replace github.com/siderolabs/cluster-api-bootstrap-provider-talos => github.com/sidero-community/cluster-api-bootstrap-provider-talos v0.9.0
+replace github.com/siderolabs/cluster-api-bootstrap-provider-talos => github.com/Polychoronix/cluster-api-bootstrap-provider-talos v0.9.0-craci.1

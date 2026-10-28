@@ -17,6 +17,7 @@ import (
 	"sigs.k8s.io/cluster-api/util/collections"
 	"sigs.k8s.io/cluster-api/util/conditions"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
 const etcdLeavingAnnotation = "controlplane.cluster.x-k8s.io/etcd-leaving"
@@ -106,7 +107,7 @@ func (r *TalosControlPlaneReconciler) scaleDownControlPlane(
 func (r *TalosControlPlaneReconciler) deleteControlPlaneMachine(ctx context.Context, machine *clusterv1.Machine) (ctrl.Result, error) {
 	r.Log.Info("deleting machine", "machine", machine.Name, "node", machine.Status.NodeRef.Name)
 
-	if err := r.Client.Delete(ctx, machine); err != nil && !apierrors.IsNotFound(err) {
+	if err := r.Client.Delete(ctx, machine, client.Preconditions{UID: &machine.UID, ResourceVersion: &machine.ResourceVersion}); err != nil && !apierrors.IsNotFound(err) {
 		return ctrl.Result{}, errors.Wrapf(err, "failed to delete control plane machine %q", machine.Name)
 	}
 

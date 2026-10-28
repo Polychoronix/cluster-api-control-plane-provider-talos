@@ -7,88 +7,76 @@ package controllers
 import (
 	"context"
 	"fmt"
+	"net"
 
-	"github.com/pkg/errors"
+	cabptv1 "github.com/siderolabs/cluster-api-bootstrap-provider-talos/api/v1beta1"
+	sharedclient "github.com/siderolabs/cluster-api-bootstrap-provider-talos/pkg/talosclient"
 	controlplanev1 "github.com/siderolabs/cluster-api-control-plane-provider-talos/api/v1beta1"
 	talosclient "github.com/siderolabs/talos/pkg/machinery/client"
-	talosconfig "github.com/siderolabs/talos/pkg/machinery/client/config"
-	corev1 "k8s.io/api/core/v1"
-
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	clusterv1 "sigs.k8s.io/cluster-api/api/core/v1beta2"
 )
 
-// talosconfigForMachine will generate a talosconfig that uses *all* found addresses as the endpoints.
-//
-// NOTE: There is no client.WithNodes(...) here, so no multiplexing is done. The request will hit any
-// of the controlplane nodes in machines list.
-func (r *TalosControlPlaneReconciler) talosconfigForMachines(ctx context.Context, tcp *controlplanev1.TalosControlPlane, machines ...clusterv1.Machine) (*talosclient.Client, error) {
-	if len(machines) == 0 {
-		return nil, fmt.Errorf("at least one machine should be provided")
+func talosEndpointForMachine(tcp *controlplanev1.TalosControlPlane, machine *clusterv1.Machine) (cabptv1.TalosEndpoint, error) {
+	if machine.Namespace != tcp.Namespace {
+		return cabptv1.TalosEndpoint{}, fmt.Errorf("Machine %s is outside the control plane namespace", machine.Name)
 	}
+	spec, err := tcp.Spec.EffectiveTalosConfigSpec(machine)
+	if err != nil {
+		return cabptv1.TalosEndpoint{}, err
+	}
+	if spec.TalosEndpoint != nil {
+		return *spec.TalosEndpoint, nil
+	}
+	// Ordinary provisioning retains address fallback. Never change Node IP policy
+	// to reach Talos; an explicit endpoint bypasses these addresses completely.
+	for _, kind := range []clusterv1.MachineAddressType{clusterv1.MachineInternalIP, clusterv1.MachineExternalIP} {
+		for _, address := range machine.Status.Addresses {
+			if address.Type != kind {
+				continue
+			}
+			host := address.Address
+			port := "50000"
+			if suppliedHost, suppliedPort, err := net.SplitHostPort(address.Address); err == nil {
+				host, port = suppliedHost, suppliedPort
+			}
+			return cabptv1.TalosEndpoint{Address: net.JoinHostPort(host, port), ServerName: host}, nil
+		}
+	}
+	return cabptv1.TalosEndpoint{}, fmt.Errorf("no Talos endpoint or node address for Machine %s", machine.Name)
+}
 
-	clusterName := tcp.GetLabels()[clusterv1.ClusterNameLabel]
-
-	for _, ref := range tcp.GetOwnerReferences() {
+// talosClientForMachine opens exactly one transport/TLS identity and returns its
+// routed RPC context. Callers reuse both for the operation and close the client.
+func (r *TalosControlPlaneReconciler) talosClientForMachine(ctx context.Context, tcp *controlplanev1.TalosControlPlane, machine *clusterv1.Machine) (*talosclient.Client, context.Context, error) {
+	if r.APIReader == nil {
+		return nil, nil, fmt.Errorf("APIReader is required for Talos identity lookup")
+	}
+	endpoint, err := talosEndpointForMachine(tcp, machine)
+	if err != nil {
+		return nil, nil, err
+	}
+	clusterName := tcp.Labels[clusterv1.ClusterNameLabel]
+	for _, ref := range tcp.OwnerReferences {
 		if ref.Kind != "Cluster" {
 			continue
 		}
-
 		gv, err := schema.ParseGroupVersion(ref.APIVersion)
 		if err != nil {
-			return nil, errors.WithStack(err)
+			return nil, nil, fmt.Errorf("invalid Cluster owner reference")
 		}
-
 		if gv.Group == clusterv1.GroupVersion.Group {
 			clusterName = ref.Name
-
 			break
 		}
 	}
-
 	if clusterName == "" {
-		return nil, fmt.Errorf("failed to determine the cluster name of the control plane")
+		return nil, nil, fmt.Errorf("failed to determine control plane Cluster name")
 	}
-
-	addrList := []string{}
-
-	var (
-		talosconfigSecret corev1.Secret
-	)
-
-	if err := r.Client.Get(ctx,
-		types.NamespacedName{
-			Namespace: tcp.GetNamespace(),
-			Name:      clusterName + "-talosconfig",
-		},
-		&talosconfigSecret,
-	); err != nil {
-		return nil, err
-	}
-
-	t, err := talosconfig.FromBytes(talosconfigSecret.Data["talosconfig"])
+	c, err := sharedclient.New(ctx, r.APIReader, types.NamespacedName{Namespace: tcp.Namespace, Name: clusterName}, endpoint)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-
-	for _, machine := range machines {
-		for _, addr := range machine.Status.Addresses {
-			if addr.Type == clusterv1.MachineExternalIP || addr.Type == clusterv1.MachineInternalIP {
-				addrList = append(addrList, addr.Address)
-			}
-		}
-
-		if len(addrList) == 0 {
-			return nil, fmt.Errorf("no addresses were found for node %q", machine.Name)
-		}
-	}
-
-	// Endpoints were pre-populated by the CABPT controller; the given machines only narrow the
-	// request down to specific nodes.
-	return talosclient.New(ctx,
-		talosclient.WithDefaultGRPCDialOptions(),
-		talosclient.WithEndpoints(addrList...),
-		talosclient.WithConfig(t),
-	)
+	return c, sharedclient.WithNode(ctx, endpoint), nil
 }

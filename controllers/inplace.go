@@ -31,6 +31,7 @@ type inPlacePlan struct {
 	desiredMachine      *clusterv1.Machine
 	desiredInfraMachine *unstructured.Unstructured
 	desiredTalosConfig  *cabptv1.TalosConfig
+	currentTalosConfig  *cabptv1.TalosConfig
 }
 
 // inPlaceDecision is the outcome of offering the outdated control plane Machines to the
@@ -75,27 +76,22 @@ func (r *TalosControlPlaneReconciler) reconcileInPlaceUpdates(
 ) (inPlaceDecision, error) {
 	decision := newInPlaceDecision()
 
+	// Desired specs are written before the runtime hook finishes, so an updating
+	// Machine may already match the desired spec. Scan the full control plane, and
+	// honor an existing transaction even if the gate or runtime client was disabled.
+	decision.claimed = controlPlane.Machines.Filter(isUpdatingInPlace)
+	if len(decision.claimed) > 0 {
+		return decision, nil
+	}
+
 	if !feature.Gates.Enabled(feature.InPlaceUpdates) || r.RuntimeClient == nil {
-		// Exactly the pre-in-place behaviour: everything outdated is rolled out.
 		decision.rollout = outdated
 
 		return decision, nil
 	}
 
-	// Machines already mid-update stay claimed so the rollout path leaves them alone until
-	// the core Machine controller clears the annotation.
-	for _, machine := range outdated {
-		if isUpdatingInPlace(machine) {
-			decision.claimed.Insert(machine)
-		}
-	}
-
-	// One control plane machine at a time. An in-place update can reboot the node (a Talos
-	// upgrade always does), so concurrent updates would risk etcd quorum. The remaining
-	// outdated Machines wait; they are offered again once this one has finished.
-	if len(decision.claimed) > 0 {
-		return decision, nil
-	}
+	// One control plane machine at a time. An in-place update can reboot the node
+	// (a Talos upgrade always does), so concurrent updates would risk etcd quorum.
 
 	candidate := r.nextInPlaceCandidate(controlPlane, outdated)
 	if candidate == nil {
@@ -148,7 +144,7 @@ func (r *TalosControlPlaneReconciler) offerInPlace(
 		return decision, nil
 	}
 
-	if err := r.triggerInPlaceUpdate(ctx, plan); err != nil {
+	if err := r.triggerInPlaceUpdate(ctx, tcp, controlPlane.Cluster, plan); err != nil {
 		return decision, err
 	}
 
@@ -211,8 +207,13 @@ func (r *TalosControlPlaneReconciler) buildInPlacePlan(
 		return nil, fmt.Errorf("cannot plan in-place update for %s: TalosConfig not found", klog.KObj(machine))
 	}
 
+	plan.currentTalosConfig = current
 	desiredTalosConfig := current.DeepCopy()
-	desiredTalosConfig.Spec = tcp.Spec.ControlPlaneConfig.ControlPlaneConfig
+	desiredSpec, err := tcp.Spec.EffectiveTalosConfigSpec(machine)
+	if err != nil {
+		return nil, err
+	}
+	desiredTalosConfig.Spec = *desiredSpec
 	plan.desiredTalosConfig = desiredTalosConfig
 
 	return plan, nil

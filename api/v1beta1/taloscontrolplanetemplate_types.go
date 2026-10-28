@@ -5,6 +5,7 @@
 package v1beta1
 
 import (
+	cabptv1 "github.com/siderolabs/cluster-api-bootstrap-provider-talos/api/v1beta1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	clusterv1 "sigs.k8s.io/cluster-api/api/core/v1beta2"
 )
@@ -25,6 +26,7 @@ type TalosControlPlaneTemplateResource struct {
 }
 
 // TalosControlPlaneTemplateResourceSpec defines the desired state of TalosControlPlane through a template.
+// +kubebuilder:validation:XValidation:rule="!has(self.machineConfigOverrides) || !has(self.controlPlaneConfig.controlplane.machineConfig) || self.machineConfigOverrides.all(x, !has(x.config))",message="override config cannot coexist with shared machineConfig"
 type TalosControlPlaneTemplateResourceSpec struct {
 	// MachineTemplate contains information about how control plane Machines should be shaped.
 	// For ClusterClass / topology, ClusterClass.spec.controlPlane.machineInfrastructure.templateRef
@@ -44,11 +46,24 @@ type TalosControlPlaneTemplateResourceSpec struct {
 	// to use for initializing and joining machines to the control plane.
 	ControlPlaneConfig ControlPlaneConfig `json:"controlPlaneConfig"`
 
+	// MachineConfigOverrides are namespace-local, existing-Machine UID pins.
+	// +listType=map
+	// +listMapKey=name
+	// +optional
+	MachineConfigOverrides []MachineConfigOverride `json:"machineConfigOverrides,omitempty"`
+
+	// +optional
+	Management *cabptv1.ManagementSpec `json:"management,omitempty"`
+
 	// The RolloutStrategy to use to replace control plane machines with
 	// new ones.
 	// +optional
 	// +kubebuilder:default={type: "RollingUpdate", rollingUpdate: {maxSurge: 1}}
 	RolloutStrategy *RolloutStrategy `json:"rolloutStrategy,omitempty"`
+
+	// Kubeconfig selects management of the standard Cluster kubeconfig Secret.
+	// +optional
+	Kubeconfig KubeconfigSpec `json:"kubeconfig,omitempty,omitzero"`
 }
 
 // TalosControlPlaneTemplateMachineTemplate is the MachineTemplate carried by a

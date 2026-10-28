@@ -24,6 +24,8 @@ import (
 	"time"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/labels"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	runtimecatalog "sigs.k8s.io/cluster-api/api/runtime/catalog"
@@ -40,7 +42,7 @@ type Caller interface {
 	GetAllExtensions(ctx context.Context, hook runtimecatalog.Hook, forObject metav1.Object) ([]string, error)
 
 	// CallExtension calls a named extension handler.
-	CallExtension(ctx context.Context, hook runtimecatalog.Hook, forObject metav1.Object, name string, request, response any) error
+	CallExtension(ctx context.Context, hook runtimecatalog.Hook, forObject metav1.Object, name string, request runtimehooksv1.RequestObject, response runtimehooksv1.ResponseObject) error
 }
 
 // Client discovers and calls runtime extensions via ExtensionConfig resources.
@@ -58,7 +60,7 @@ func New(reader client.Reader) *Client {
 }
 
 // handlerFor locates the ExtensionConfig and handler serving a hook.
-func (c *Client) handlerFor(ctx context.Context, hook runtimecatalog.Hook, name string) (*runtimev1.ExtensionConfig, *runtimev1.ExtensionHandler, error) {
+func (c *Client) handlerFor(ctx context.Context, hook runtimecatalog.Hook, forObject metav1.Object, name string) (*runtimev1.ExtensionConfig, *runtimev1.ExtensionHandler, error) {
 	gvh, err := c.catalog.GroupVersionHook(hook)
 	if err != nil {
 		return nil, nil, fmt.Errorf("hook is not in the catalog: %w", err)
@@ -83,6 +85,14 @@ func (c *Client) handlerFor(ctx context.Context, hook runtimecatalog.Hook, name 
 				continue
 			}
 
+			matches, err := c.matchNamespace(ctx, config, forObject)
+			if err != nil {
+				return nil, nil, err
+			}
+			if !matches {
+				return nil, nil, fmt.Errorf("extension handler %q namespaceSelector did not match object %s/%s", name, forObject.GetNamespace(), forObject.GetName())
+			}
+
 			return config, handler, nil
 		}
 	}
@@ -91,7 +101,7 @@ func (c *Client) handlerFor(ctx context.Context, hook runtimecatalog.Hook, name 
 }
 
 // GetAllExtensions returns the names of handlers registered for a hook.
-func (c *Client) GetAllExtensions(ctx context.Context, hook runtimecatalog.Hook, _ metav1.Object) ([]string, error) {
+func (c *Client) GetAllExtensions(ctx context.Context, hook runtimecatalog.Hook, forObject metav1.Object) ([]string, error) {
 	gvh, err := c.catalog.GroupVersionHook(hook)
 	if err != nil {
 		return nil, fmt.Errorf("hook is not in the catalog: %w", err)
@@ -107,6 +117,13 @@ func (c *Client) GetAllExtensions(ctx context.Context, hook runtimecatalog.Hook,
 	for i := range list.Items {
 		for _, handler := range list.Items[i].Status.Handlers {
 			if handler.RequestHook.Hook == gvh.Hook && handler.RequestHook.APIVersion == gvh.GroupVersion().String() {
+				matches, err := c.matchNamespace(ctx, &list.Items[i], forObject)
+				if err != nil {
+					return nil, err
+				}
+				if !matches {
+					continue
+				}
 				names = append(names, handler.Name)
 			}
 		}
@@ -116,8 +133,8 @@ func (c *Client) GetAllExtensions(ctx context.Context, hook runtimecatalog.Hook,
 }
 
 // CallExtension posts request to the named handler and decodes the reply into response.
-func (c *Client) CallExtension(ctx context.Context, hook runtimecatalog.Hook, _ metav1.Object, name string, request, response any) error {
-	config, handler, err := c.handlerFor(ctx, hook, name)
+func (c *Client) CallExtension(ctx context.Context, hook runtimecatalog.Hook, forObject metav1.Object, name string, request runtimehooksv1.RequestObject, response runtimehooksv1.ResponseObject) error {
+	config, handler, err := c.handlerFor(ctx, hook, forObject, name)
 	if err != nil {
 		return err
 	}
@@ -131,9 +148,42 @@ func (c *Client) CallExtension(ctx context.Context, hook runtimecatalog.Hook, _ 
 		return fmt.Errorf("hook is not in the catalog: %w", err)
 	}
 
+	if err := c.catalog.ValidateRequest(gvh, request); err != nil {
+		return fmt.Errorf("invalid hook request: %w", err)
+	}
+	if err := c.catalog.ValidateResponse(gvh, response); err != nil {
+		return fmt.Errorf("invalid hook response: %w", err)
+	}
+
+	// In-place errors must hold the owner transaction, not become successful
+	// responses or replacement. This narrow client does not support Ignore.
+	if handler.FailurePolicy != "" && handler.FailurePolicy != runtimev1.FailurePolicyFail {
+		return fmt.Errorf("extension handler %q must use failurePolicy Fail for in-place updates", name)
+	}
+
 	endpoint, err := endpointFor(config, handler, gvh)
 	if err != nil {
 		return err
+	}
+
+	// Do not allocate or copy when the caller's request already has all settings.
+	// Copy before merging so neither the request nor ExtensionConfig is mutated.
+	for key := range config.Spec.Settings {
+		if _, exists := request.GetSettings()[key]; exists {
+			continue
+		}
+		request = request.DeepCopyObject().(runtimehooksv1.RequestObject)
+		settings := request.GetSettings()
+		if settings == nil {
+			settings = make(map[string]string, len(config.Spec.Settings))
+		}
+		for key, value := range config.Spec.Settings {
+			if _, exists := settings[key]; !exists {
+				settings[key] = value
+			}
+		}
+		request.SetSettings(settings)
+		break
 	}
 
 	body, err := json.Marshal(request)
@@ -177,6 +227,32 @@ func (c *Client) CallExtension(ctx context.Context, hook runtimecatalog.Hook, _ 
 	}
 
 	return nil
+}
+
+// matchNamespace evaluates the current registration against current namespace
+// labels. Both discovery and calls use the reader, never a saved scope decision.
+func (c *Client) matchNamespace(ctx context.Context, config *runtimev1.ExtensionConfig, forObject metav1.Object) (bool, error) {
+	if forObject == nil {
+		return false, fmt.Errorf("runtime hook object is required")
+	}
+	// Core admission defaults an omitted selector to {} and requires it afterward.
+	// An unexpected missing selector must not become empty discovery or global scope.
+	if config.Spec.NamespaceSelector == nil {
+		return false, fmt.Errorf("ExtensionConfig %s has no namespaceSelector", config.Name)
+	}
+	selector, err := metav1.LabelSelectorAsSelector(config.Spec.NamespaceSelector)
+	if err != nil {
+		return false, fmt.Errorf("ExtensionConfig %s has an invalid namespaceSelector: %w", config.Name, err)
+	}
+	if selector.Empty() {
+		return true, nil
+	}
+	namespace := &metav1.PartialObjectMetadata{}
+	namespace.SetGroupVersionKind(schema.GroupVersionKind{Version: "v1", Kind: "Namespace"})
+	if err := c.reader.Get(ctx, client.ObjectKey{Name: forObject.GetNamespace()}, namespace); err != nil {
+		return false, fmt.Errorf("ExtensionConfig %s failed to read namespace %s: %w", config.Name, forObject.GetNamespace(), err)
+	}
+	return selector.Matches(labels.Set(namespace.GetLabels())), nil
 }
 
 // endpointFor builds the URL of a handler from its ExtensionConfig client config.

@@ -8,6 +8,7 @@ import (
 	cabptv1 "github.com/siderolabs/cluster-api-bootstrap-provider-talos/api/v1alpha3"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
 )
 
@@ -15,10 +16,41 @@ const (
 	TalosControlPlaneFinalizer = "talos.controlplane.cluster.x-k8s.io"
 )
 
+// +kubebuilder:validation:XValidation:rule="!has(self.controlplane.management)",message="control-plane approval belongs to TalosControlPlane.spec.management"
 type ControlPlaneConfig struct {
 	// Deprecated: starting from cacppt v0.4.0 provider doesn't use init configs.
 	InitConfig         cabptv1.TalosConfigSpec `json:"init,omitempty"`
 	ControlPlaneConfig cabptv1.TalosConfigSpec `json:"controlplane"`
+}
+
+// MachineConfigOverride identifies one existing Machine in this namespace.
+// +kubebuilder:validation:XValidation:rule="has(self.config) || has(self.talosEndpoint)",message="config or talosEndpoint is required"
+type MachineConfigOverride struct {
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=253
+	Name string `json:"name"`
+	// +kubebuilder:validation:Type=string
+	// +kubebuilder:validation:MinLength=1
+	UID types.UID `json:"uid"`
+	// +optional
+	Config *cabptv1.MachineConfigOverlay `json:"config,omitempty"`
+	// +optional
+	TalosEndpoint *cabptv1.TalosEndpoint `json:"talosEndpoint,omitempty"`
+}
+
+type KubeconfigMode string
+
+const (
+	KubeconfigModeManaged  KubeconfigMode = "Managed"
+	KubeconfigModeExternal KubeconfigMode = "External"
+)
+
+// KubeconfigSpec configures management of <cluster>-kubeconfig, key value.
+type KubeconfigSpec struct {
+	// External never writes, takes ownership of or rotates the supplied Secret.
+	// +optional
+	// +kubebuilder:validation:Enum=Managed;External
+	Mode KubeconfigMode `json:"mode,omitempty"`
 }
 
 // RolloutStrategyType defines the rollout strategies for a KubeadmControlPlane.
@@ -34,6 +66,7 @@ const (
 )
 
 // TalosControlPlaneSpec defines the desired state of TalosControlPlane
+// +kubebuilder:validation:XValidation:rule="!has(self.machineConfigOverrides) || !has(self.controlPlaneConfig.controlplane.machineConfig) || self.machineConfigOverrides.all(x, !has(x.config))",message="override config cannot coexist with shared machineConfig"
 type TalosControlPlaneSpec struct {
 	// Number of desired machines. Defaults to 1. When stacked etcd is used only
 	// odd numbers are permitted, as per [etcd best practice](https://etcd.io/docs/v3.3.12/faq/#why-an-odd-number-of-cluster-members).
@@ -54,11 +87,25 @@ type TalosControlPlaneSpec struct {
 	// to use for initializing and joining machines to the control plane.
 	ControlPlaneConfig ControlPlaneConfig `json:"controlPlaneConfig"`
 
+	// Overrides are namespace-local and only apply to a matching existing UID.
+	// +listType=map
+	// +listMapKey=name
+	// +optional
+	MachineConfigOverrides []MachineConfigOverride `json:"machineConfigOverrides,omitempty"`
+
+	// Management uses the bootstrap provider's common inventory approval contract.
+	// +optional
+	Management *cabptv1.ManagementSpec `json:"management,omitempty"`
+
 	// The RolloutStrategy to use to replace control plane machines with
 	// new ones.
 	// +optional
 	// +kubebuilder:default={type: "RollingUpdate", rollingUpdate: {maxSurge: 1}}
 	RolloutStrategy *RolloutStrategy `json:"rolloutStrategy,omitempty"`
+
+	// Kubeconfig selects provider-managed or externally managed Kubernetes access.
+	// +optional
+	Kubeconfig KubeconfigSpec `json:"kubeconfig,omitempty,omitzero"`
 }
 
 // GetReplicas reads spec replicas in a safe way.
@@ -164,6 +211,9 @@ type TalosControlPlaneStatus struct {
 	// ObservedGeneration is the latest generation observed by the controller.
 	// +optional
 	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
+
+	// +optional
+	Management *cabptv1.ManagementStatus `json:"management,omitempty"`
 
 	// Conditions defines current service state of the KubeadmControlPlane.
 	// +optional

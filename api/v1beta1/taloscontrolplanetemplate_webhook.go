@@ -9,6 +9,7 @@ import (
 	"fmt"
 
 	"github.com/google/go-cmp/cmp"
+	cabptv1 "github.com/siderolabs/cluster-api-bootstrap-provider-talos/api/v1beta1"
 	"k8s.io/apimachinery/pkg/util/validation/field"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
@@ -82,6 +83,9 @@ func (r *TalosControlPlaneTemplate) validate() (admission.Warnings, error) {
 	allErrs = append(allErrs, validateMachineNamingStrategy(r.Spec.Template.Spec.MachineNamingStrategy, field.NewPath("spec", "template", "spec", "machineNamingStrategy"))...)
 	allErrs = append(allErrs, validateRolloutStrategy(r.Spec.Template.Spec.RolloutStrategy, field.NewPath("spec", "template", "spec", "rolloutStrategy"))...)
 	allErrs = append(allErrs, validateControlPlaneConfig(&r.Spec.Template.Spec.ControlPlaneConfig, field.NewPath("spec", "template", "spec", "controlPlaneConfig"))...)
+	allErrs = append(allErrs, ValidateMachineConfigOverrides(r.Spec.Template.Spec.ControlPlaneConfig.ControlPlaneConfig, r.Spec.Template.Spec.MachineConfigOverrides, field.NewPath("spec", "template", "spec", "machineConfigOverrides"))...)
+	allErrs = append(allErrs, validateKubeconfig(r.Spec.Template.Spec.Kubeconfig, field.NewPath("spec", "template", "spec", "kubeconfig"))...)
+	allErrs = append(allErrs, cabptv1.ValidateManagementSpec(field.NewPath("spec", "template", "spec", "management"), r.Spec.Template.Spec.Management)...)
 	if len(allErrs) == 0 {
 		return nil, nil
 	}

@@ -531,6 +531,7 @@ func (suite *ControllersSuite) TestReconcileInitializeControlPlane() {
 	m, n := createMachineNodePair("foo-machine1", cluster, tcp, true, machineAddress)
 	g.Expect(fakeClient.Create(suite.ctx, m)).To(Succeed())
 	g.Expect(fakeClient.Create(suite.ctx, n)).To(Succeed())
+	g.Expect(settleFakeBootstrap(suite.ctx, fakeClient, m)).To(Succeed())
 
 	g.Expect(createSecrets(suite.ctx, fakeClient, cluster, suite.secretsBundle, machineAddress))
 
@@ -807,6 +808,7 @@ func (suite *ControllersSuite) runUpdater(ctx context.Context, fakeClient client
 		case <-ticker.C:
 			machines := suite.getMachines(fakeClient, cluster)
 			for _, machine := range machines {
+				g.Expect(settleFakeBootstrap(ctx, fakeClient, &machine)).To(Succeed())
 				if len(machine.Status.Addresses) == 0 {
 					_, address := suite.startMachineServer()
 

@@ -6,25 +6,37 @@
 >
 > For an alternative, please see [Omni](https://github.com/siderolabs/omni.git).
 >
-> Unless you have an existing support contract covering Cluster API Control Plane Provider Talos, all support will be provided by the community (including questions in our Slack workspace).
+> This upstream deprecation/support notice is historical; it does not establish release availability or a support contract for this personal fork.
 <!-- textlint-enable -->
 
 ## Intro
 
-The Cluster API Control Plane Provider Talos (CACPPT) is a project by [Sidero Labs](https://www.SideroLabs.com/) that provides a [Cluster API](https://github.com/kubernetes-sigs/cluster-api)(CAPI) control plane provider for use in deploying Talos Linux-based Kubernetes nodes across any environment.
-Given some basic info, this provider will generate control plane configurations for a given cluster and reconcile the necessary custom resources for CAPI to pick up the generated data.
+This repository is the personal CRACI fork of the [Sidero Labs](https://www.SideroLabs.com/)
+Cluster API Control Plane Provider Talos. It provides a [Cluster API](https://github.com/kubernetes-sigs/cluster-api)
+control plane provider for Talos; fork-specific management and lifecycle features
+require the explicitly matched personal bootstrap-provider fork, not community fallback.
 
 ## Corequisites
 
 There are a few corequisites and assumptions that go into using this project:
 
 - [Cluster API](https://github.com/kubernetes-sigs/cluster-api)
-- [Cluster API Bootstrap Provider Talos](https://github.com/sidero-community/cluster-api-bootstrap-provider-talos)
+- [Matched personal Cluster API Bootstrap Provider Talos fork](https://github.com/Polychoronix/cluster-api-bootstrap-provider-talos)
 - [Cluster API Provider Metal](https://github.com/siderolabs/cluster-api-provider-metal) (optional)
 
 ## Compatibility with Cluster API and Kubernetes Versions
 
-This provider's versions are compatible with the following versions of Cluster API:
+The tables below are **historical upstream release compatibility references**, not
+verification of this custom fork's full managed lifecycle across every listed version.
+
+The current custom-fork full-lifecycle implementation targets CAPI **v1.14.2 /
+v1beta2** and the **Talos 1.14** API/COSI contract. Local API/TLS, owner recovery,
+runtime and retirement tests cover documented paths, not certification of physical
+provisioning, every core/infrastructure controller or a live fleet rollout. Older
+Talos/Kubernetes read-only health or retirement capabilities are limited to APIs
+and versions explicitly observed in their separate evidence; an upstream checkmark,
+successful read or older compatibility flag does not authorize apply/upgrade/rollback,
+native replacement or general management on those versions.
 
 |                                              | v1alpha3 (v0.3) | v1alpha4 (v0.4) | v1beta1 (v1.x) | v1beta2 (v1.12+) |
 | -------------------------------------------- | --------------- | --------------- | -------------- | ---------------- |
@@ -37,18 +49,20 @@ This provider's versions are compatible with the following versions of Cluster A
 | Control Plane Provider Talos v1alpha3 (v0.8) |                 |                 |                | ✓                |
 | Control Plane Provider Talos v1alpha3 (v0.9) |                 |                 |                | ✓                |
 
-The `v0.6.x`, `v0.7.x`, `v0.8.x` and `v0.9.x` release series target the Cluster API `v1beta2` contract (CAPI core `v1.12+`; `v0.8.x` and later are built against `v1.14.2`, which adds Kubernetes 1.37 for management and workload clusters).
-Released `v0.5.x` artifacts remain on `v1beta1`; `config/metadata/metadata.yaml` advertises the `v0.6` series as `v1beta2`.
+Historically, upstream `v0.6.x` through `v0.9.x` targeted the CAPI `v1beta2` contract;
+`v0.8.x` and later used CAPI `v1.14.2`, while `v0.5.x` artifacts used `v1beta1`.
+Current provider metadata retains the `0.9` / `v1beta2` contract; select the actual
+approved matched custom release rather than inferring fork capability from this table.
 
-The `v0.8.x` series drops `spec.controlPlaneConfig.init` (deprecated since v0.4.0) and the
+Historically, the upstream `v0.8.x` series dropped `spec.controlPlaneConfig.init` (deprecated since v0.4.0) and the
 `status.deprecated.v1beta1` block; v1alpha3 clients still see the old-shape status, derived from
 the v1beta2 fields.
 
-The `v0.9.x` series follows the Kubeadm Control Plane provider's machine lifecycle (see
+Historically, the upstream `v0.9.x` series followed the Kubeadm Control Plane provider's machine lifecycle (see
 [Machine deletion and etcd](#machine-deletion-and-etcd)) and removes the
 `--enable-machine-pre-terminate-hook` flag: the hook is always on.
 
-This provider's versions are able to install and manage the following versions of Kubernetes:
+Historical upstream Kubernetes installation/management compatibility declarations:
 
 |                                              | v1.16 | v1.17 | v1.18 | v1.19 | v1.20 | v1.21 | v1.22 | v1.23 | v1.24 | v1.25 | v1.26 | v1.27 | v1.28 | v1.29 | v1.30 | v1.31 | v1.32 | v1.33 | v1.34 | v1.35 | v1.36 | v1.37 |
 | -------------------------------------------  | ----- | ----- | ----- | ----- | ----- | ----- | ----- | ----- | ----- | ----- | ----- | ----- | ----- | ----- | ----- | ----- | ----- | ----- | ----- | ----- | ----- | ----- |
@@ -61,7 +75,7 @@ This provider's versions are able to install and manage the following versions o
 | Control Plane Provider Talos v1alpha3 (v0.8) |       |        |       |       |       |       |       |       |       |       |       |       |       |       | ✓     | ✓     | ✓     | ✓     | ✓     | ✓     | ✓     | ✓     |
 | Control Plane Provider Talos v1alpha3 (v0.9) |       |        |       |       |       |       |       |       |       |       |       |       |       |       | ✓     | ✓     | ✓     | ✓     | ✓     | ✓     | ✓     | ✓     |
 
-This provider's versions are compatible with the following versions of Talos:
+Historical upstream Talos compatibility declarations:
 
 |                                              | v0.11 | v0.12  | v0.13 | v0.14 | v1.0  | v1.1  | v1.2  | v1.3  | v1.4  | v1.5  | v1.6  | v1.7  | v1.8  | v1.9  | v1.10 | v1.11 | v1.12 | v1.13 | v1.14 |
 | -------------------------------------------- | ----- | ------ | ----- | ----- | ----- | ----- | ----- | ----- | ----- | ----- | ----- | ----- | ----- | ----- | ----- | ----- | ----- | ----- | ----- |
@@ -76,46 +90,109 @@ This provider's versions are compatible with the following versions of Talos:
 
 ## Building and Installing
 
-This control plane provider can be installed with clusterctl:
+### Selecting an approved published provider source
 
-```bash
-clusterctl init -c talos -b talos -i <infra-provider-of-choice>
-```
+The personal bootstrap fork has published
+[`v0.9.0-craci.1`](https://github.com/Polychoronix/cluster-api-bootstrap-provider-talos/releases/tag/v0.9.0-craci.1)
+from `84b9dcc2be13191c9545a2c627335b0f28e67128`. Credential-free GoProxy/sumdb
+resolution selected that exact tag and source commit. This consumer now requires
+the same version, preserving the upstream Go module path through its personal-fork
+`replace`. **The matching control-plane release is not published yet.** Installation
+remains gated on both approved provider releases and verified asset checksums/access.
 
-If you encounter the following error, this is caused by a rename of our GitHub org from `talos-systems` to `siderolabs`.
+After the matching control-plane release is published, select the **same explicit approved release version** from the
+[personal bootstrap fork releases](https://github.com/Polychoronix/cluster-api-bootstrap-provider-talos/releases)
+and [personal control-plane fork releases](https://github.com/Polychoronix/cluster-api-control-plane-provider-talos/releases).
+Verify the version-specific component assets, provider metadata, checksums and actual
+GHCR access; do not use a `latest` URL, an unverified candidate asset URL or a
+community-provider fallback.
 
-```bash
-$ clusterctl init -b talos -c talos -i sidero
-Fetching providers
-Error: failed to get provider components for the "talos" provider: target namespace can't be defaulted. Please specify a target namespace
-```
+For `clusterctl`, configure the custom provider repository in `clusterctl.yaml`:
+the `talos` entry with type `BootstrapProvider` must use the copied, verified
+version-specific `bootstrap-components.yaml` asset URL from the personal bootstrap
+release; the `talos` entry with type `ControlPlaneProvider` must similarly use its
+verified `control-plane-components.yaml` asset URL. Select that exact version when
+initializing; choose the separately approved infrastructure-provider repository and
+version independently. Default provider-name discovery is not a fork selection.
 
-This can be worked around by adding the following to `~/.cluster-api/clusterctl.yaml` and rerunning the init command:
-
-```yaml
-providers:
-  - name: "talos"
-    url: "https://github.com/sidero-community/cluster-api-bootstrap-provider-talos/releases/latest/bootstrap-components.yaml"
-    type: "BootstrapProvider"
-  - name: "talos"
-    url: "https://github.com/sidero-community/cluster-api-control-plane-provider-talos/releases/latest/control-plane-components.yaml"
-    type: "ControlPlaneProvider"
-  - name: "sidero"
-    url: "https://github.com/siderolabs/sidero/releases/latest/infrastructure-components.yaml"
-    type: "InfrastructureProvider"
-```
-
-If you are going to use this provider as part of Sidero management plane, please refer to [Sidero Docs](https://www.sidero.dev/docs/v0.4/getting-started/install-clusterapi/)
-on how to install and configure it.
+For Cluster API Operator, set the actual approved versions on its bootstrap and
+control-plane provider objects and configure its supported custom component fetch
+source to those same verified personal-fork assets. Do not leave the Operator's
+default community registry/fetch source in place while changing only a version.
+Retain one installation/CRD/Provider-inventory owner and follow the independently
+approved stored-version/controller handoff; do not deploy a second conflicting
+provider to make source selection work.
 
 This project can be built simply by running `make release` from the root directory.
-Building requires Go 1.26+ (the `v0.8.x` and later series depend on CAPI `v1.14.2` / controller-runtime `v0.24`).
-Doing so will create a file called `_out/control-plane-components.yaml`.
-If you wish, you can tweak settings by editing the release yaml.
-This file can then be installed into your management cluster with `kubectl apply -f _out/control-plane-components.yaml`.
+The provider module requires Go 1.26.5; the current fork targets CAPI `v1.14.2` / controller-runtime `v0.24`.
+Doing so exports `control-plane-components.yaml` and `metadata.yaml` beneath
+`_out/control-plane-talos/<actual-tag>/`.
+The rendered files are packaging artifacts, not installation approval. Use only the
+actual verified release assets under the approved clusterctl/Operator source and
+controller ownership plan; do not apply local candidate output to a live cluster.
 
 Note that CACPPT should be deployed as part of a set of controllers for Cluster API.
-You will need at least the upstream CAPI components, the Talos bootstrap provider, and an infrastructure provider for v1beta2 CAPI capabilities.
+Use the approved CAPI core version, the exactly matched personal bootstrap fork,
+and a separately verified infrastructure provider for the required native lifecycle.
+
+### Personal-fork prerelease packaging
+
+The paired provider version is **v0.9.0-craci.1**: the bootstrap prerelease exists,
+but the matching control-plane tag, image and release assets remain unpublished.
+The consumer source dependency cutover must pass eligible source CI before the
+user creates its matching release tag. Series 0.9 already declares the CAPI
+`v1beta2` contract in provider metadata.
+
+This fork defaults local image output to
+`ghcr.io/polychoronix/cluster-api-control-plane-talos-controller`. The public-hosted
+`release.yaml` workflow derives the lowercase image namespace from the repository
+owner, uses the full checked-out source commit and actual source URL/tag as OCI
+labels, and classifies hyphen prerelease tags as prereleases. Only the image
+`container` target writes `_out/image-metadata.json`; generation and artifact
+stages cannot overwrite that buildx receipt. Immediately after the actual image
+push, the publisher validates `containerimage.digest` and passes the resulting
+`ghcr.io/<lowercase-owner>/cluster-api-control-plane-talos-controller@sha256:...`
+reference as `CONTROLLER_IMAGE` to the existing Docker artifact renderer. It
+regenerates CRD/RBAC manifests and computes SHA-256/SHA-512 checksums from the
+actual rendered components and metadata. The publisher never falls back to a tag.
+The generated Kres tag publisher is removed: this workflow owns tag publication.
+`source.yaml` provides nonpublishing validation on public GitHub-hosted runners.
+The inherited Kres branch/PR workflow remains on the upstream `generic` runner
+group and is not assumed usable by this fork; it no longer publishes images or
+handles tags. `make rekres` uses this repository's exact pinned native Kres revision
+with `GITHUB_TOKEN` unset, so regeneration cannot restore a second tag publisher.
+The pinned Kres revision requires Go **1.26.6 or newer**; the local native generator
+check automatically selected Go 1.26.10. This is a generator prerequisite, not a
+bump to the provider's Go 1.26.5 module. It runs in a disposable minimal repository
+and copies only generated `ci.yaml`, preserving unrelated signing/DCO policy.
+Release assets include actual `SHA256SUMS` and `SHA512SUMS`, not assumed digests.
+
+`CONTROLLER_IMAGE` is shared by native and Docker rendering. A tagged default is
+allowed for local artifact-only rendering; deployable published components must
+use the verified digest from the actual push. The direct shared renderer uses
+checked-in public `config/` inputs without Docker or source generation; the Make
+`release-manifests` target retains its Docker-based `manifests` prerequisite. For
+an artifact-only native render (parameters below are not published assets):
+
+```sh
+KUSTOMIZE=kustomize sh hack/release-manifests.sh v0.9.0-craci.1 \
+  ghcr.io/polychoronix/cluster-api-control-plane-talos-controller:v0.9.0-craci.1 _out
+```
+
+The Docker path uses the same `hack/release-manifests.sh` interface. After separately
+checking source/manifests, pass the explicitly selected image to `make local-release
+DEST=./_out PLATFORM=linux/amd64 TAG="$TAG" CONTROLLER_IMAGE="$CONTROLLER_IMAGE"`.
+The Kustomize 4.1.0 Linux amd64 release archive is pinned by SHA256
+`77263c66afd04106348bebd019096933e26c0054d5b0ade8265f3426cf440ae6`.
+
+Keep the upstream Go module identity and its exact personal-fork `replace` pin.
+The consumer pins the remotely resolved released SDK tag rather than its former
+temporary workspace. Do not ship a filesystem replacement or fall back to the older public SDK.
+A tag push starts
+the publication workflow; neither local rendering nor these examples authorize
+that push. A public source repository does not prove GHCR package visibility:
+the user must verify package visibility/access and actual CI/image/checksum outputs
+before recording an immutable deployment digest. No consumer image or digest is claimed here.
 
 CACPPT plays the following role in the whole Cluster API architecture:
 
@@ -188,7 +265,10 @@ Each patch must be passed as a YAML string, typically via a block scalar (`- |`)
 Note the generateType mentioned above.
 This is a required value in the spec for both controlplane and worker ("join") nodes.
 For a no-frills control plane config, you can simply specify `controlplane` depending on each config section.
-When creating a `TalosControlPlane` this way, you can retrieve the generated Talos client config from the corresponding `TalosConfig` object after creation, for example with `kubectl get talosconfig talos-cp-xxxx -o jsonpath='{.status.talosConfig}'`.
+Generated Talos client credentials are held only in the namespace-local
+`<cluster>-talosconfig` Secret, key `talosconfig`, not public `TalosConfig` status.
+Use an authorized private credential-handling workflow; never paste this Secret,
+full machine configuration or credential bytes into logs, chat or Git.
 
 If you wish to do something more complex, we allow for the ability to supply an entire Talos machine config file to the resource.
 This can be done by setting `controlPlaneConfig.controlplane.generateType` to `none` and specifying a `data` field.
@@ -300,6 +380,369 @@ named `talos-topology-control-plane`, and control plane machines named
 See `config/samples/topology_v1alpha3_clusterclass_with_taloscontrolplanetemplate.yaml` for a ClusterClass / Cluster fragment including workers.
 That sample assumes the referenced infrastructure and worker bootstrap templates already exist.
 
+### Secret-backed inputs and per-Machine Talos endpoints
+
+The matched bootstrap provider's `configSecretRef`, ordered
+`strategicPatchSecretRefs`, `configRevision`, `machineConfig` and `talosEndpoint`
+are preserved in `spec.controlPlaneConfig.controlplane` and templates, including
+served-version conversion. References are `{name, key}` in the TalosConfig's
+namespace. A baseline replaces only the base; shared public and Secret patches
+remain ordered policy. A changed public spec triggers a requested update; use a
+new non-secret `configRevision` for changed bytes in a same-name Secret. There is
+no automatic Secret drift rollout.
+
+Use `spec.machineConfigOverrides` for existing per-node differences. The list is
+keyed by unique Machine `name`, with required exact `uid` and at least one
+`config` (the bootstrap provider's `MachineConfigOverlay`) or `talosEndpoint`:
+
+```yaml
+machineConfigOverrides:
+  - name: example-control-plane-one
+    uid: <actual-existing-Machine-UID>
+    config:
+      configSecretRef: {name: example-node-baseline, key: value}
+      configRevision: reviewed-node-revision
+    talosEndpoint:
+      address: talos-egress.example:50000
+      serverName: example-control-plane-one.example.ts.net
+      node: example-control-plane-one
+```
+
+Namespace is implicit; no cross-namespace input. A reused name with another UID
+is a hard error **before** pre-terminate, etcd or lifecycle actions. Missing entries
+may remain inert before association. New Machines use shared-only inputs, and a
+new name colliding with a pinned entry fails rather than consuming it. An override
+`config` cannot coexist with shared `controlPlaneConfig.controlplane.machineConfig`:
+there is only one per-node slot. Put shared policy in the root public/Secret patch
+fields. Endpoint-only overrides may coexist with the shared slot. Every other
+shared field stays intact in creation, rollout equality and update plans.
+
+Each Machine gets its own imported-mTLS client: `address` is dial transport,
+`serverName` verifies TLS/SNI, and optional `node` routes every RPC through a proxy.
+Different identities are never combined in an endpoint list. Kubernetes node IPs
+are not changed; ordinary provisioning retains node-address fallback when no
+explicit endpoint exists. These input and transport seams alone **do not authorize
+adoption**. Use the read-only inventory and manifest approval guard below before
+transferring lifecycle responsibility; external kubeconfig mode alone is not a guard.
+
+Local tests exercise effective specs, UID/conflict fencing, actual served CRD
+admission and per-node mTLS RPCs (health, etcd, bootstrap and leave/remove), including
+distinct dial/SNI/targets and unchanged imported credentials. This is not a live
+adoption or verified Talos update-completion claim.
+
+### Read-only inventory and manifest activation
+
+For existing control-plane Machines, declare `spec.management` on the
+`TalosControlPlane` (or `spec.template.spec.management` on its template):
+
+```yaml
+management:
+  mode: Observe
+  inventoryRevision: import-1
+  machines:
+    - name: existing-control-plane-a
+      uid: exact-existing-machine-uid
+```
+
+The inventory is namespace-local and UID-pinned; list every intended member, not a
+fixed three-node topology. `Observe` verifies settled Machine/bootstrap/infra
+references, existing seed and imported identities, actual workload Node identity
+and readiness, active Talos configuration, boot/version/kubelet observations and
+the complete consistent etcd member view. Shared plus per-Machine desired baseline
+and patches must render to the observed active configuration. Failed or incomplete
+inspection sets `InventoryVerified=False`; it is not replacement eligibility.
+
+Observation precedes lifecycle finalizers, deletion, bootstrap, identity ownership,
+template cloning, pre-terminate hooks and etcd audit. It writes only private
+provider-owned observation Secrets and TCP observation status/conditions; it does
+not mutate imported Machines, TalosConfigs, infrastructure, seeds or credentials.
+`Ready` and `Available` remain false because read-only health is not lifecycle
+activation. Cluster/TCP/Machine/TalosConfig/infrastructure pauses stop observation,
+snapshot refresh and ownership writes, allowing only `Paused` bookkeeping.
+
+After reviewing a successful observation, approve its public opaque ID in the
+manifest together with the same inventory revision:
+
+```yaml
+management:
+  mode: Managed
+  inventoryRevision: import-1
+  machines:
+    - name: existing-control-plane-a
+      uid: exact-existing-machine-uid
+  approval:
+    revision: import-1
+    observationID: exact-observed-opaque-id
+```
+
+An unchanged healthy resync preserves the observation ID. Changed inputs or private
+source freshness require a new observation and approval; the public ID is not a
+configuration hash. Preparation freezes only the exact Machine owner-reference
+delta, without activating. No-create UID/resourceVersion CAS writes attach this
+exact TCP controller while preserving other owners. Restart resumes only the
+frozen original-or-desired owners. Completion rechecks every member, source and
+runtime identity before durable activation; partial transfer, stale approval or a
+foreign controller never authorizes lifecycle work. Approved owner association
+does not itself create/delete Machines or call Talos bootstrap/apply/etcd mutation.
+
+Once activated, normal requested updates and provider-created successors use the
+existing lifecycle and accepted-bootstrap lineage; they are not permanently locked
+to the original imported UIDs or baseline. Lifecycle selection always requires the
+exact TCP controller identity, never labels alone. Omitting `management` is only a
+fresh path when no private management record exists and existing Machines have
+provider-created accepted bootstrap intent. Removing public status/declarations
+does not turn an imported seed into fresh provenance.
+
+A deleting activated TCP uses a separate read-only retirement authorization:
+the exact prior authority/activation and imported associations must still match,
+with no active markers, pending hook, Prepared/Released intent, ambiguous operation
+or unconsumed receipt. Expected disappearing/deleting children and workload Nodes
+are handled by native CAPI deletion, not by a new healthy-running observation or
+Talos reset. Native deletion and hook release use Machine UID/resourceVersion
+preconditions; they cannot cross a same-name replacement. Infrastructure readiness
+does not prevent authorized retirement, and no finalizer is added to a deleting TCP.
+Uncached release rereads preserve the observed Machine spec, NodeRef/providerID,
+addresses, deletion transition and pending/update-completion state before CAS;
+unrelated status/metadata churn is not replacement intent. A lost response resumes
+from the actual written snapshot without restoring a hook or changing owners.
+
+The only owner-plan work permitted on a deleting authority is fully witnessed
+`Consumed` cleanup: unchanged frozen owner/spec/UID/output/source identity and the
+matching consumed receipt are revalidated before reference detach and owner Secret
+UID/resourceVersion deletion. A pause anywhere in the pinned inventory stops that
+cleanup. New desired policy never reinterprets the old plan; Prepared/Released or
+ambiguous work remains held. This cleanup grants no new bootstrap/apply/upgrade,
+snapshot or activation permission. Imported seed and credential bytes stay intact.
+
+Local isolated tests use actual Kubernetes API writes, workload TLS and simulated
+strict-mTLS Talos/COSI servers with two and three members. They exercise pauses,
+freshness/stale approval, foreign ownership, partial owner-write response loss,
+restart, aggregate activation and native deleting-object API requests. Separate
+actual API tests cover witnessed Consumed detach/delete response loss while the
+authority is deleting; their executor receipts are fixture-produced. These are not
+live adoption, Flux choreography, physical-node provisioning or reboot/OS-upgrade
+proof. Deployment and handoff still require the independently reviewed inventory
+and controller ownership plan.
+
+### Observed control-plane update status
+
+Machine `UpToDate` is `False` with reason `Updating` while a spec-matched Machine
+has pending/in-progress update markers, core's `Updating=True`, or an observed
+kubelet version different from its desired version. This follows core CAPI and
+KCP's condition contract; spec matching alone is not recovery completion.
+
+Control-plane `status.version` comes only from **every associated non-deleting
+Machine's running and ready `kube-apiserver` container status**, via uncached
+Node/Pod reads through the existing ClusterCache kubeconfig transport. Talos
+v1.14 static Pods use namespace `kube-system`, label `component=kube-apiserver`
+and container name `kube-apiserver`. Machine NodeRef associations must be unique
+and present; providerIDs must match where available. ContainerStatus image tags
+(including version-tag@digest) are observed, not Pod.spec desired images or one
+load-balanced `/version`. Missing/duplicate Pods, denied reads, unready containers
+and opaque/digest-only tags cannot establish a version.
+
+`VersionObserved` is false on incomplete inspection or outstanding update
+completion. A new running image cannot advance the published version while any
+Machine update remains pending. On the first observation pass, an inherited
+status.version lacking this new condition is discarded as unverified legacy
+intent. Complete successful observations establish the minimum and provenance;
+later temporary failures retain only that previously confirmed value and set the
+condition false. This condition is not adoption consent or a durable operation
+receipt. Ordinary fresh-bootstrap UpToDate spec semantics remain unchanged.
+
+Workload credentials need read-only Nodes and `kube-system` Pods access; the
+intended external auth-proxy role already grants these, but deployed permissions
+must be verified by the user. No new credentials, management privileges or
+transport migration are introduced. Isolated owner envtest covers status/replica
+holds and advancement; real token-only TLS smoke proves uncached per-node reads
+and denial without modifying the externally managed Secret.
+
+### Externally managed Kubernetes kubeconfig
+
+Set `spec.kubeconfig.mode: External` on a `TalosControlPlane` (or
+`spec.template.spec.kubeconfig.mode` on its template) to retain an independently
+managed Kubernetes auth-proxy kubeconfig. The omitted/default mode is `Managed`.
+Both served control plane API versions preserve the setting.
+
+External mode consumes only the standard namespace-local `<cluster>-kubeconfig`
+Secret, key `value`; it never creates a replacement, takes ownership, rewrites
+labels/credentials, or attempts client-certificate rotation. The Secret's external
+owner must provide the matching `cluster.x-k8s.io/cluster-name` label required by
+the CAPI Cluster cache. Token authentication works without a Kubernetes client
+certificate; exec and auth-provider plugins are unsupported by core CAPI and
+are rejected without execution. Supply valid HTTPS server/current-context
+configuration. The kubeconfig's `tls-server-name` may differ from its dial host.
+Missing or invalid input reports `KubeconfigAvailable=False` using safe messages;
+Kubernetes API reachability is separately observed through `Available` and never
+inferred from successful kubeconfig parsing. Inspect metadata/conditions only:
+
+```sh
+kubectl get secret <cluster>-kubeconfig -n <namespace> \
+  -o custom-columns=NAME:.metadata.name,UID:.metadata.uid,OWNERS:.metadata.ownerReferences[*].name
+kubectl get taloscontrolplane <name> -n <namespace> \
+  -o jsonpath='{.status.conditions}'
+```
+
+The local `TestExternalKubeconfigClusterCacheTransport` smoke exercises the real
+CAPI ClusterCache and TLS REST client with token-only auth, separate dial host/SNI,
+and no client certificate. It observes repeated Kubernetes API requests, unchanged
+Secret bytes/metadata, stable healthy condition transition timestamps, and actual
+denial/recovery transitions. It uses disposable envtest management storage and an
+in-memory TLS workload endpoint, never an ambient/live cluster:
+
+```sh
+KUBEBUILDER_ASSETS=<setup-envtest-binary-directory> go test ./controllers \
+  -run '^TestExternalKubeconfig' -count=1 -v
+```
+
+For kissanpentu, retain `kissanpentu-kubeconfig` and its validated auth-proxy path.
+This is not an adoption guard: normal Machine/etcd lifecycle operations remain
+active. Keep the existing observer and do not transfer `controlPlaneRef` until an
+explicit guarded inventory/handoff is approved. Native Kubernetes TCP access or
+returning to Managed mode is a deliberate credentials/ownership migration, not a
+side effect of updating Talos management endpoints.
+
+### In-place update serialization
+
+Enable `RuntimeSDK=true,InPlaceUpdates=true` on core Cluster API and
+`InPlaceUpdates=true` on this control plane provider, with the matched Talos
+bootstrap runtime extension registered. The provider starts one control plane
+update at a time. Writing the desired Machine and bootstrap specs is **not**
+completion: while any control plane Machine carries the update-in-progress or
+pending `UpdateMachine` annotation, no other update, replacement, scale-up or
+scale-down starts. The hold also applies when every spec already matches, after
+an owner restart, or if the feature gate is disabled during an existing update.
+Do not remove these annotations to force advancement. A namespace-local private
+TCP-owned Secret freezes the exact owner plan before any desired-state write.
+Prepared plans resume only UID/resourceVersion-guarded API writes; missing objects
+are never recreated. Referenced Secret UID/RV/content snapshots must remain
+unchanged through rendering. Current-generation output freshness is frozen before
+Released, then the pending hook is exposed. Restarted Released plans without an
+exact completion witness stop for intervention, never restamp or re-execute.
+
+Private active/ambiguous plans fence pre-terminate/etcd audit, deletion, scale and
+deferred UpToDate/version advancement even when public flags disappear. Actual
+read-only health observations may continue. Completion requires the exact CABPT
+Observed receipt, accepted image intent, original object identities and all three
+core update flags plus pending hook removed. Receipt consumption, owner Consumed
+CAS, matching TalosConfig plan-reference detach and owner-plan UID/RV deletion
+are individually restart-safe. CABPT's journal/receipt remains intact for the next
+transaction; it is never deleted by this provider.
+Completed `Consumed` cleanup may finish after authority deletion is requested,
+under the same exact immutable plan/receipt checks and strict all-member pause.
+No unfinished transaction acquires retirement permission from deletion.
+
+Talos reboot draining is separate from CAPI's Machine deletion drain and volume
+detach pipeline described below. In-place updates keep the Machine and
+InfraMachine. Owner recovery proves safe API transaction completion, not physical
+Talos reboot/image/storage recovery; the actual CABPT executor must establish
+those observations before emitting its receipt.
+Physical wipe, including a Robot's original configuration seed, remains manual.
+
+The retained controller regressions use disposable envtest API servers/etcd and
+real UID/RV no-create writes. They cover concurrent owners, response loss, stale
+resource versions, source/object replacement, receipt cleanup and a pending hook
+with two control plane candidates across gate-on/off and replica counts. Output
+and completion receipts in these isolated owner tests are explicit fixtures, not
+actual CABPT/core recovery proof. No ambient cluster is used:
+
+```sh
+KUBEBUILDER_ASSETS=<setup-envtest-binary-directory> go test ./controllers \
+  -run '^(TestOwner|TestReconcileInPlaceUpdates|TestPreflight_HoldsUpdatingMachineEvenWhenExcluded|TestInPlaceSerializationControllerEnvtest)' -count=1 -v
+```
+
+The separate opt-in `TestOwnerActualCABPTCoreReceiptCoupling` exercises the
+**actual** CACPPT owner/runtime caller and ClusterCache, a standalone CABPT
+manager, and the core CAPI executor against disposable APIs. It first creates
+fresh bootstrap configurations through the provider, waits for CABPT-generated
+accepted image intent before simulated provisioning/Node readiness, then applies
+a shared revision. It verifies no receipt or peer Apply before recovery, followed
+by the original transaction's Observed/consumed receipt, accepted intent, core
+cleanup, detached plan references and retired owner Secret UID. A new transaction
+for the peer may subsequently occupy the deterministic owner-plan name.
+
+The exercised standalone CABPT source was local commit
+`f19b8fa1629b5a8bcc786ac0de3b0100f88bb809`; the core source/API was CAPI v1.14.2
+commit `5f7d58c9ad647f31bd342bf8de33092c27f7fc38`. These are source observations,
+not published release/image pins. Prepare the actual core binary and its source
+tree, Kubernetes 1.36.2 envtest binaries and the CAPH v1.1.8 CRD directory before
+running; the test does not download assets or use ambient credentials. Build the
+standalone CABPT manager from the matched checkout, one compile at a time:
+
+```sh
+# Run in the matched CABPT checkout.
+GOMAXPROCS=2 CGO_ENABLED=0 GOWORK=off go build -p 1 -o /tmp/cacppt-cabpt-manager .
+
+# Run in this repository. GOWORK is only for unpublished matched local sources;
+# keep that workspace outside the repository and never ship a local-path replace.
+GOMAXPROCS=2 CGO_ENABLED=0 \
+GOWORK=<external-matched-workspace-file> \
+KUBEBUILDER_ASSETS=<k8s-1.36.2-envtest-binary-directory> \
+CAPI_RUNTIME_CORE_BINARY=<absolute-core-v1.14.2-manager-binary> \
+CAPI_RUNTIME_CORE_SOURCE=<absolute-core-v1.14.2-source-root> \
+CAPI_RUNTIME_CAPH_CRDS=<absolute-caph-v1.1.8-crd-directory> \
+CABPT_RUNTIME_BINARY=/tmp/cacppt-cabpt-manager \
+go test -p 1 ./controllers -run '^TestOwnerActualCABPTCoreReceiptCoupling$' \
+  -count=1 -v -timeout=6m
+```
+
+The core source root must contain `core/config/crd/bases` and
+`core/config/webhook/manifests.yaml`; the CAPH directory must contain its actual
+HetznerCluster, HetznerBareMetalMachine and template CRDs. The test launches both
+managers with explicit generated local kubeconfigs and separate TLS certificates,
+leaves `POD_NAMESPACE` unset for CABPT's URL registration fixture, and waits for
+core's real Discovery. Runtime poll cadence is unchanged; the bounded completion
+window accounts for the advertised 30-second retries. Children are stopped before
+API/certificate cleanup. No manual accepted-intent, journal or receipt writes are
+used in this test.
+
+This is a **two-CP, no-reboot cross-provider proof with simulated mTLS/COSI node
+backends**, not a three-node physical rollout, adoption or OS-upgrade proof.
+Fixture-only restart/serialization tests above remain separate. Explicit captured
+owner/manager/context and subprocess logs are checked for private-token redaction;
+framework-global certwatcher logs are not claimed as covered by that capture.
+
+
+Fresh TalosConfig creation records creation-only initial TCP name/UID annotations
+for CABPT's live initial-bootstrap lineage validation. Updates preserve them;
+existing configs/adopted nodes never receive them retrospectively. These markers
+are not adoption consent.
+
+### Runtime extension namespace scope and settings
+
+The control plane's narrow runtime caller honors the registered
+`ExtensionConfig.spec.namespaceSelector` against the **Machine namespace's**
+labels, not Machine labels or the extension Service namespace. Core CAPI
+admission defaults an omitted selector to `{}`, which matches every namespace.
+Use `matchLabels` or `matchExpressions` to restrict the extension's scope. The
+provider needs only `get` permission on Namespaces for this lookup.
+
+Discovery and the actual call independently read the current registration and
+namespace labels. A previously discovered handler cannot bypass a subsequently
+narrowed selector or relabeled namespace. Invalid/missing selectors and API read
+errors are hard failures, not empty discovery or permission to replace a Machine.
+A valid selector excluding a namespace makes that extension unavailable there.
+
+`spec.settings` is included in hook requests, with request-specific values taking
+precedence. Neither the caller's request nor the registration is modified; the
+request is copied only when registration settings must be added. This is not a
+general-purpose replacement for the internal core CAPI runtime client. In-place
+handlers must use `failurePolicy: Fail` (also core's default). `Ignore` is
+unsupported and rejected: call errors must not become successful responses or
+silently authorize replacement of an ambiguous operation.
+
+The local regression uses real CAPI Runtime SDK TLS Discovery and
+`CanUpdateMachine`, with Discovery-derived handler status persisted in a disposable
+envtest management API server. It checks request settings and returned coverage,
+selected/excluded namespaces, relabeling, selector narrowing, zero excluded calls,
+and successful recovery. It does **not** run the CABPT executor or core
+Machine/ExtensionConfig reconcilers, prove Talos completion, or access a live
+cluster:
+
+```sh
+KUBEBUILDER_ASSETS=<setup-envtest-binary-directory> go test ./internal/runtimeclient -count=1 -v
+```
+
 ### Machine deletion and etcd
 
 Control plane `Machine` deletion follows the Kubeadm Control Plane provider's pattern, on every
@@ -308,8 +751,8 @@ deletion path — a scale-down, a rollout, a `MachineHealthCheck` remediation, o
 
 1. **Interception.** Every control plane `Machine` this provider owns carries the Cluster API
    pre-terminate lifecycle hook `pre-terminate.delete.hook.machine.cluster.x-k8s.io/tcp-cleanup`
-   from the moment it is created. Machines that predate the hook are adopted on the next
-   reconcile — with one exception: a `Machine` that is *already* being deleted is never stamped,
+   from the moment it is created. Already TCP-controlled Machines that predate the hook are
+   stamped on the next reconcile — except a `Machine` that is *already* being deleted,
    because it may have moved past the pre-terminate phase already. While the annotation is
    present, the core Machine controller holds the `Machine` after the node has been drained and
    its volumes detached, and before the infrastructure provider is allowed to delete the
@@ -340,6 +783,7 @@ Like KCP, the provider runs preflight checks before creating or deleting a contr
 `Machine`. A scale operation waits while:
 
 - any control plane `Machine` is being deleted (one membership change at a time),
+- any control plane `Machine` has an in-place transaction pending or in progress,
 - any `Machine` has no `Node` yet,
 - a control plane component reports an unhealthy service, or
 - the `EtcdClusterHealthy` condition is not `True`.

@@ -12,6 +12,7 @@ import (
 	cabptv1beta1 "github.com/siderolabs/cluster-api-bootstrap-provider-talos/api/v1beta1"
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
+	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/utils/ptr"
 	utilconversion "sigs.k8s.io/cluster-api/util/conversion"
@@ -116,6 +117,25 @@ func TestTalosControlPlaneRoundTripPreservesImageFactory(t *testing.T) {
 	require.Equal(t, hub.Spec.ControlPlaneConfig.ControlPlaneConfig.ImageFactory, restored.Spec.ControlPlaneConfig.ControlPlaneConfig.ImageFactory)
 }
 
+func TestMachineConfigOverridesRoundTrip(t *testing.T) {
+	hub := &cpv1beta1.TalosControlPlane{ObjectMeta: metav1.ObjectMeta{Name: "cp", Namespace: "tenant"}, Spec: cpv1beta1.TalosControlPlaneSpec{
+		ControlPlaneConfig:     cpv1beta1.ControlPlaneConfig{ControlPlaneConfig: cabptv1beta1.TalosConfigSpec{GenerateType: "controlplane", ConfigSecretRef: &cabptv1beta1.SecretKeyReference{Name: "shared-base", Key: "value"}, ConfigRevision: "shared-2", StrategicPatchSecretRefs: []cabptv1beta1.SecretKeyReference{{Name: "first", Key: "patch"}, {Name: "second", Key: "patch"}}}},
+		MachineConfigOverrides: []cpv1beta1.MachineConfigOverride{{Name: "cp-one", UID: "uid-one", Config: &cabptv1beta1.MachineConfigOverlay{ConfigSecretRef: &cabptv1beta1.SecretKeyReference{Name: "private-base", Key: "config"}, ConfigRevision: "node-3", ConfigPatches: []cabptv1beta1.ConfigPatches{{Op: "add", Path: "/machine/env/NODE", Value: apiextensionsv1.JSON{Raw: []byte(`"public"`)}}}, StrategicPatches: []string{"node-first", "node-second"}, StrategicPatchSecretRefs: []cabptv1beta1.SecretKeyReference{{Name: "node-private", Key: "patch"}}}, TalosEndpoint: &cabptv1beta1.TalosEndpoint{Address: "proxy:50000", ServerName: "cp-one.example.test", Node: "cp-one"}}},
+	}}
+	spoke := &TalosControlPlane{}
+	require.NoError(t, spoke.ConvertFrom(hub))
+	require.Equal(t, "uid-one", string(spoke.Spec.MachineConfigOverrides[0].UID))
+	require.Equal(t, "node-3", spoke.Spec.MachineConfigOverrides[0].Config.ConfigRevision)
+	require.Equal(t, "cp-one.example.test", spoke.Spec.MachineConfigOverrides[0].TalosEndpoint.ServerName)
+	// Remove conversion stash: served shared inputs and UID overrides must survive
+	// their actual schemas, not just a hub snapshot annotation.
+	delete(spoke.Annotations, utilconversion.DataAnnotation)
+	restored := &cpv1beta1.TalosControlPlane{}
+	require.NoError(t, spoke.ConvertTo(restored))
+	require.Equal(t, hub.Spec.ControlPlaneConfig, restored.Spec.ControlPlaneConfig)
+	require.Equal(t, hub.Spec.MachineConfigOverrides, restored.Spec.MachineConfigOverrides)
+}
+
 // v1alpha3 still carries `init`; the hub does not, so it is dropped on the way up and restored
 // from the stash on the way back down.
 func TestInitConfigDoesNotReachTheHub(t *testing.T) {
@@ -166,4 +186,35 @@ func TestControlPlaneStatusConvertFromDerivesTheLegacyFields(t *testing.T) {
 	require.EqualValues(t, 1, spoke.Status.UnavailableReplicas)
 	require.Nil(t, spoke.Status.FailureReason)
 	require.Equal(t, Conditions{{Type: "Available", Status: corev1.ConditionTrue, Reason: "Available", LastTransitionTime: transition}}, spoke.Status.Conditions)
+}
+
+func TestExternalKubeconfigSpecRoundTrip(t *testing.T) {
+	for _, mode := range []cpv1beta1.KubeconfigMode{"", cpv1beta1.KubeconfigModeManaged, cpv1beta1.KubeconfigModeExternal} {
+		hub := &cpv1beta1.TalosControlPlane{Spec: cpv1beta1.TalosControlPlaneSpec{Kubeconfig: cpv1beta1.KubeconfigSpec{Mode: mode}}}
+		spoke := &TalosControlPlane{}
+		require.NoError(t, spoke.ConvertFrom(hub))
+		require.Equal(t, string(mode), string(spoke.Spec.Kubeconfig.Mode))
+		back := &cpv1beta1.TalosControlPlane{}
+		require.NoError(t, spoke.ConvertTo(back))
+		require.Equal(t, hub.Spec.Kubeconfig, back.Spec.Kubeconfig)
+	}
+}
+
+func TestManagementAuthorityRoundTripAndDeepCopy(t *testing.T) {
+	management := &cabptv1beta1.ManagementSpec{Mode: cabptv1beta1.ManagementModeManaged, InventoryRevision: "inventory-1", Machines: []cabptv1beta1.MachineIdentityReference{{Name: "cp-one", UID: "uid-one"}, {Name: "cp-two", UID: "uid-two"}}, Approval: &cabptv1beta1.ObservationApproval{Revision: "inventory-1", ObservationID: "opaque-consent"}}
+	status := &cabptv1beta1.ManagementStatus{Observation: &cabptv1beta1.ObservationStatus{Revision: "inventory-1", ID: "opaque-consent", ObservedAt: metav1.NewTime(time.Date(2026, 10, 23, 12, 0, 0, 0, time.UTC))}, ActivatedRevision: "inventory-1"}
+	hub := &cpv1beta1.TalosControlPlane{Spec: cpv1beta1.TalosControlPlaneSpec{Management: management}, Status: cpv1beta1.TalosControlPlaneStatus{Management: status}}
+	spoke := &TalosControlPlane{}
+	require.NoError(t, spoke.ConvertFrom(hub))
+	back := &cpv1beta1.TalosControlPlane{}
+	require.NoError(t, spoke.ConvertTo(back))
+	require.Equal(t, management, back.Spec.Management)
+	require.Equal(t, status, back.Status.Management)
+	copy := hub.DeepCopy()
+	copy.Spec.Management.Machines[0].UID = "changed"
+	copy.Spec.Management.Approval.ObservationID = "changed"
+	copy.Status.Management.Observation.ID = "changed"
+	require.Equal(t, "uid-one", string(hub.Spec.Management.Machines[0].UID))
+	require.Equal(t, "opaque-consent", hub.Spec.Management.Approval.ObservationID)
+	require.Equal(t, "opaque-consent", hub.Status.Management.Observation.ID)
 }

@@ -13,8 +13,6 @@
 package hooks
 
 import (
-	"context"
-	"fmt"
 	"strings"
 
 	"k8s.io/apimachinery/pkg/util/sets"
@@ -27,49 +25,6 @@ import (
 // IsPending returns true if the given hook is tracked as pending on obj.
 func IsPending(hook runtimecatalog.Hook, obj client.Object) bool {
 	return isInList(obj.GetAnnotations()[runtimev1.PendingHooksAnnotation], runtimecatalog.HookName(hook))
-}
-
-// MarkAsPending records the intent to call hooks on obj and patches it.
-//
-// Writing this annotation is what releases the core Machine controller to begin calling the
-// UpdateMachine hook, so it must be the last step of triggering an in-place update.
-func MarkAsPending(ctx context.Context, c client.Client, obj client.Object, hooks ...runtimecatalog.Hook) error {
-	names := make([]string, 0, len(hooks))
-	for _, hook := range hooks {
-		names = append(names, runtimecatalog.HookName(hook))
-	}
-
-	orig := obj.DeepCopyObject().(client.Object) //nolint:errcheck,forcetypeassert // client.Object round-trips
-
-	annotations := obj.GetAnnotations()
-	if annotations == nil {
-		annotations = map[string]string{}
-	}
-
-	updated := addToList(annotations[runtimev1.PendingHooksAnnotation], names...)
-	if annotations[runtimev1.PendingHooksAnnotation] == updated {
-		return nil
-	}
-
-	annotations[runtimev1.PendingHooksAnnotation] = updated
-	obj.SetAnnotations(annotations)
-
-	if err := c.Patch(ctx, obj, client.MergeFrom(orig)); err != nil {
-		return fmt.Errorf("failed to mark hook(s) %s as pending: %w", strings.Join(names, ","), err)
-	}
-
-	return nil
-}
-
-func addToList(list string, items ...string) string {
-	set := sets.New[string]()
-	if list != "" {
-		set.Insert(strings.Split(list, ",")...)
-	}
-
-	set.Insert(items...)
-
-	return strings.Join(sets.List(set), ",")
 }
 
 func isInList(list, item string) bool {

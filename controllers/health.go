@@ -53,14 +53,14 @@ func (r *TalosControlPlaneReconciler) nodesHealthcheck(ctx context.Context, tcp 
 
 	for _, machine := range machines {
 		if err := func() error {
-			client, err := r.etcdClientFor(ctx, tcp, machine)
+			client, rpcCtx, err := r.etcdClientFor(ctx, tcp, machine)
 			if err != nil {
 				return err
 			}
 
 			defer client.Close() //nolint:errcheck
 
-			serviceList, err := client.ServiceList(ctx)
+			serviceList, err := client.ServiceList(rpcCtx)
 			if err != nil {
 				return err
 			}
@@ -101,14 +101,14 @@ func (r *TalosControlPlaneReconciler) ensureNodesBooted(ctx context.Context, tcp
 
 	// watch events from all machines into a single channel
 	for _, machine := range machines {
-		client, err := r.talosconfigForMachines(ctx, tcp, machine)
+		client, rpcCtx, err := r.talosClientForMachine(ctx, tcp, &machine)
 		if err != nil {
 			return err
 		}
 
 		clients = append(clients, client)
 
-		if err := client.EventsWatchV2(ctx, eventsCh, talosclient.WithTailEvents(-1)); err != nil {
+		if err := client.EventsWatchV2(rpcCtx, eventsCh, talosclient.WithTailEvents(-1)); err != nil {
 			return err
 		}
 	}
