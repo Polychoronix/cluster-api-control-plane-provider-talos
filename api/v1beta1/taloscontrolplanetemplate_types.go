@@ -45,6 +45,7 @@ type TalosControlPlaneTemplateResourceSpec struct {
 	ControlPlaneConfig ControlPlaneConfig `json:"controlPlaneConfig"`
 
 	// +optional
+	// +kubebuilder:default=false
 	Manage bool `json:"manage,omitempty"`
 
 	// The RolloutStrategy to use to replace control plane machines with

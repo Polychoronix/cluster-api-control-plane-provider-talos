@@ -204,6 +204,7 @@ spec:
                             x-kubernetes-list-type: atomic
                         type: object
                       manage:
+                        default: false
                         description: Manage consents to activation after exact live
                           observation; false is read-only.
                         type: boolean
@@ -404,6 +405,7 @@ spec:
                             x-kubernetes-list-type: atomic
                         type: object
                       manage:
+                        default: false
                         description: Manage consents to activation after exact live
                           observation; false is read-only.
                         type: boolean
@@ -531,6 +533,7 @@ spec:
                     type: string
                 type: object
               manage:
+                default: false
                 description: Manage consents to activation after observing all owned
                   control-plane Machines.
                 type: boolean
@@ -1017,6 +1020,7 @@ spec:
                             x-kubernetes-list-type: atomic
                         type: object
                       manage:
+                        default: false
                         description: Manage consents to activation after exact live
                           observation; false is read-only.
                         type: boolean
@@ -1272,6 +1276,7 @@ spec:
                     type: object
                 type: object
               manage:
+                default: false
                 description: Manage consents to activation after observing all owned
                   control-plane Machines.
                 type: boolean

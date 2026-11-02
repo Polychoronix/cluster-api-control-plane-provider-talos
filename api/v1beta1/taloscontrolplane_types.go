@@ -146,6 +146,7 @@ type TalosControlPlaneSpec struct {
 
 	// Manage consents to activation after observing all owned control-plane Machines.
 	// +optional
+	// +kubebuilder:default=false
 	Manage bool `json:"manage,omitempty"`
 
 	// The RolloutStrategy to use to replace control plane machines with
