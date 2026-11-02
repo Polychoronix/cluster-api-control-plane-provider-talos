@@ -104,11 +104,13 @@ func TestPerMachineEndpointsActualMTLSAndRouting(t *testing.T) {
 	secret := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "cluster-talosconfig", Namespace: "default", UID: "identity-uid"}, Data: map[string][]byte{"talosconfig": identityData}}
 	scheme := runtime.NewScheme()
 	require.NoError(t, corev1.AddToScheme(scheme))
+	require.NoError(t, cabptv1.AddToScheme(scheme))
 	api := fake.NewClientBuilder().WithScheme(scheme).WithObjects(secret).Build()
 	tcp := &controlplanev1.TalosControlPlane{ObjectMeta: metav1.ObjectMeta{Name: "cp", Namespace: "default", Labels: map[string]string{clusterv1.ClusterNameLabel: "cluster"}}, Spec: controlplanev1.TalosControlPlaneSpec{ControlPlaneConfig: controlplanev1.ControlPlaneConfig{ControlPlaneConfig: cabptv1.TalosConfigSpec{GenerateType: "controlplane"}}}}
 	var calls []endpointCall
 	var mu sync.Mutex
 	machines := []clusterv1.Machine{{ObjectMeta: metav1.ObjectMeta{Name: "cp-one", Namespace: "default", UID: "one"}}, {ObjectMeta: metav1.ObjectMeta{Name: "cp-two", Namespace: "default", UID: "two"}}}
+	configs := make([]*cabptv1.TalosConfig, len(machines))
 	for i := range machines {
 		machine := &machines[i]
 		sni := machine.Name + ".example.test"
@@ -143,7 +145,9 @@ func TestPerMachineEndpointsActualMTLSAndRouting(t *testing.T) {
 		machineapi.RegisterMachineServiceServer(server, &endpointMachineServer{})
 		go func() { _ = server.Serve(listener) }()
 		t.Cleanup(server.Stop)
-		tcp.Spec.MachineConfigOverrides = append(tcp.Spec.MachineConfigOverrides, controlplanev1.MachineConfigOverride{Name: machine.Name, UID: machine.UID, TalosEndpoint: &cabptv1.TalosEndpoint{Address: listener.Addr().String(), ServerName: sni, Node: machine.Name}})
+		machine.Spec.Bootstrap.ConfigRef = clusterv1.ContractVersionedObjectReference{APIGroup: cabptv1.GroupVersion.Group, Kind: "TalosConfig", Name: machine.Name}
+		configs[i] = &cabptv1.TalosConfig{ObjectMeta: metav1.ObjectMeta{Name: machine.Name, Namespace: machine.Namespace, UID: types.UID("config-" + machine.Name), OwnerReferences: []metav1.OwnerReference{*metav1.NewControllerRef(machine, clusterv1.GroupVersion.WithKind("Machine"))}}, Spec: cabptv1.TalosConfigSpec{TalosEndpoint: &cabptv1.TalosEndpoint{Address: listener.Addr().String(), ServerName: sni, Node: machine.Name}}}
+		require.NoError(t, api.Create(t.Context(), configs[i]))
 		// Kubernetes node addresses are deliberately unreachable and stay untouched.
 		machine.Status.Addresses = []clusterv1.MachineAddress{{Type: clusterv1.MachineInternalIP, Address: "192.0.2.1"}}
 		machine.Status.NodeRef = clusterv1.MachineNodeReference{Name: machine.Name}
@@ -152,7 +156,7 @@ func TestPerMachineEndpointsActualMTLSAndRouting(t *testing.T) {
 	require.NoError(t, r.nodesHealthcheck(t.Context(), tcp, machines))
 	require.NoError(t, r.etcdHealthcheck(t.Context(), tcp, machines))
 	require.NoError(t, r.ensureNodesBooted(t.Context(), tcp, machines))
-	require.NoError(t, r.bootstrapCluster(t.Context(), tcp, machines))
+	require.NoError(t, r.bootstrapCluster(t.Context(), &clusterv1.Cluster{}, tcp, machines))
 	require.NoError(t, r.etcdLeaveFromVictim(t.Context(), tcp, &machines[1]))
 	c, rpcCtx, err := r.talosClientForMachine(t.Context(), tcp, &machines[0])
 	require.NoError(t, err)
@@ -177,8 +181,9 @@ func TestPerMachineEndpointsActualMTLSAndRouting(t *testing.T) {
 	stored := &corev1.Secret{}
 	require.NoError(t, api.Get(t.Context(), client.ObjectKeyFromObject(secret), stored))
 	require.Equal(t, identityData, stored.Data["talosconfig"])
-	originalSNI := tcp.Spec.MachineConfigOverrides[0].TalosEndpoint.ServerName
-	tcp.Spec.MachineConfigOverrides[0].TalosEndpoint.ServerName = "wrong.example.test"
+	originalSNI := configs[0].Spec.TalosEndpoint.ServerName
+	configs[0].Spec.TalosEndpoint.ServerName = "wrong.example.test"
+	require.NoError(t, api.Update(t.Context(), configs[0]))
 	badCtx, cancel := context.WithTimeout(t.Context(), 200*time.Millisecond)
 	badClient, badRPC, err := r.talosClientForMachine(badCtx, tcp, &machines[0])
 	require.NoError(t, err)
@@ -186,12 +191,14 @@ func TestPerMachineEndpointsActualMTLSAndRouting(t *testing.T) {
 	require.Error(t, err, "actual RPC must fail wrong certificate name")
 	require.NoError(t, badClient.Close())
 	cancel()
-	tcp.Spec.MachineConfigOverrides[0].TalosEndpoint.ServerName = originalSNI
+	configs[0].Spec.TalosEndpoint.ServerName = originalSNI
+	require.NoError(t, api.Update(t.Context(), configs[0]))
 	mu.Lock()
 	require.Len(t, calls, len(observed), "failed TLS must not reach the Talos handler")
 	mu.Unlock()
-	tcp.Spec.MachineConfigOverrides[0].UID = types.UID("replacement")
+	configs[0].OwnerReferences[0].UID = types.UID("replacement")
+	require.NoError(t, api.Update(t.Context(), configs[0]))
 	_, _, err = r.talosClientForMachine(t.Context(), tcp, &machines[0])
-	require.ErrorContains(t, err, "UID pin")
+	require.ErrorContains(t, err, "owner identity changed")
 	t.Logf("%d actual mTLS RPCs through two dial addresses/different SNI targets; imported identity unchanged", len(observed))
 }

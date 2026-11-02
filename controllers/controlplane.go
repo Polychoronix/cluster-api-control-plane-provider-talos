@@ -102,6 +102,9 @@ func (c *ControlPlane) MachinesWithOutdatedRolloutSpec() (collections.Machines, 
 			return nil, err
 		}
 		config, found := c.talosConfigs[machine.Name]
+		if found {
+			desired.TalosEndpoint = config.Spec.TalosEndpoint
+		}
 		configMatches := !found || reflect.DeepEqual(*desired, config.Spec)
 		if !matchesInfra(machine) || !matchesVersion(machine) || !configMatches {
 			result.Insert(machine)

@@ -589,10 +589,6 @@ spec:
             - infrastructureTemplate
             - version
             type: object
-            x-kubernetes-validations:
-            - message: override config cannot coexist with shared machineConfig
-              rule: '!has(self.machineConfigOverrides) || !has(self.controlPlaneConfig.controlplane.machineConfig)
-                || self.machineConfigOverrides.all(x, !has(x.config))'
           status:
             description: TalosControlPlaneStatus defines the observed state of TalosControlPlane
             properties:
@@ -1333,10 +1329,6 @@ spec:
             - controlPlaneConfig
             - version
             type: object
-            x-kubernetes-validations:
-            - message: override config cannot coexist with shared machineConfig
-              rule: '!has(self.machineConfigOverrides) || !has(self.controlPlaneConfig.controlplane.machineConfig)
-                || self.machineConfigOverrides.all(x, !has(x.config))'
           status:
             description: TalosControlPlaneStatus defines the observed state of TalosControlPlane.
             properties:

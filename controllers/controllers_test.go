@@ -11,7 +11,6 @@ import (
 	"time"
 
 	. "github.com/onsi/gomega"
-	bootstrapv1 "github.com/siderolabs/cluster-api-bootstrap-provider-talos/api/v1beta1"
 	"github.com/siderolabs/talos/pkg/machinery/api/machine"
 	"github.com/siderolabs/talos/pkg/machinery/config"
 	"github.com/siderolabs/talos/pkg/machinery/config/generate/secrets"
@@ -606,7 +605,7 @@ func (suite *ControllersSuite) TestReconcileInitializeControlPlane() {
 	}, time.Second).Should(Succeed())
 }
 
-func (suite *ControllersSuite) TestRollingUpdate() {
+func (suite *ControllersSuite) TestUnactivatedNativePolicyChangesStayHeld() {
 	fakeClient := newFakeClient()
 
 	cluster, tcp, infrastructureMachineTemplate := suite.setupCluster(fakeClient, "test-rolling-update", ptr.To[int32](2))
@@ -666,49 +665,30 @@ func (suite *ControllersSuite) TestRollingUpdate() {
 		g.Expect(machine.Name).To(HavePrefix(tcp.Name))
 	}, time.Second).Should(Succeed())
 
+	originalMachines := suite.getMachines(fakeClient, cluster)
+	g.Expect(tcp.Spec.Manage).To(BeFalse(), "default policy is observe-only")
 	patchHelper, err := patch.NewHelper(tcp, fakeClient)
 	tcp.Spec.Version = "v1.25.4"
 
 	g.Expect(err).To(BeNil())
 	g.Expect(patchHelper.Patch(suite.ctx, tcp)).To(Succeed())
 
-	g.Eventually(func(g Gomega) {
+	// Old tests rolled these 1.16/1.5 fixtures without consent. craci.3 must
+	// instead hold every requested change until native observation activates.
+	for range 3 {
 		_, err = r.Reconcile(suite.ctx, ctrl.Request{NamespacedName: util.ObjectKey(tcp)})
 		g.Expect(err).NotTo(HaveOccurred())
-		suite.markMachinesReady(g, fakeClient, cluster.Namespace)
-		g.Expect(r.APIReader.Get(suite.ctx, client.ObjectKey{Name: tcp.Name, Namespace: tcp.Namespace}, tcp)).To(Succeed())
-		g.Expect(tcp.Status.ReadyReplicas).To(BeEquivalentTo(2))
-
-		machines := suite.getMachines(fakeClient, cluster)
-		for _, machine := range machines {
-			g.Expect(machine.Spec.Version).To(BeEquivalentTo(tcp.Spec.Version))
+		current := suite.getMachines(fakeClient, cluster)
+		g.Expect(current).To(HaveLen(len(originalMachines)))
+		for _, m := range current {
+			for _, original := range originalMachines {
+				if m.Name == original.Name {
+					g.Expect(m.UID).To(Equal(original.UID))
+					g.Expect(m.Spec.Version).To(Equal(original.Spec.Version))
+				}
+			}
 		}
-	}, time.Minute).Should(Succeed())
-
-	for _, machine := range suite.getMachines(fakeClient, cluster) {
-		talosconfig := &bootstrapv1.TalosConfig{}
-
-		g.Expect(fakeClient.Get(suite.ctx, client.ObjectKey{Name: machine.Spec.Bootstrap.ConfigRef.Name, Namespace: machine.Namespace}, talosconfig)).NotTo(HaveOccurred())
-
-		patchHelper, err := patch.NewHelper(talosconfig, fakeClient)
-		talosconfig.Spec.TalosVersion = "v1.5.0"
-
-		g.Expect(err).To(BeNil())
-		g.Expect(patchHelper.Patch(suite.ctx, talosconfig)).To(Succeed())
 	}
-
-	g.Eventually(func(g Gomega) {
-		_, err = r.Reconcile(suite.ctx, ctrl.Request{NamespacedName: util.ObjectKey(tcp)})
-		g.Expect(err).NotTo(HaveOccurred())
-		suite.markMachinesReady(g, fakeClient, cluster.Namespace)
-		g.Expect(r.APIReader.Get(suite.ctx, client.ObjectKey{Name: tcp.Name, Namespace: tcp.Namespace}, tcp)).To(Succeed())
-		g.Expect(tcp.Status.ReadyReplicas).To(BeEquivalentTo(2))
-
-		machines := suite.getMachines(fakeClient, cluster)
-		for _, machine := range machines {
-			g.Expect(machine.Spec.Version).To(BeEquivalentTo(tcp.Spec.Version))
-		}
-	}, time.Minute).Should(Succeed())
 
 	cancel()
 	g.Expect(eg.Wait()).To(Succeed())

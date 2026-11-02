@@ -137,10 +137,6 @@ func TestInPlaceSerializationControllerEnvtest(t *testing.T) {
 					if err := c.Create(ctx, sharedSecret); err != nil {
 						require.True(t, apierrors.IsAlreadyExists(err))
 					}
-					for _, m := range machines {
-						f.tcp.Spec.MachineConfigOverrides = append(f.tcp.Spec.MachineConfigOverrides, controlplanev1.MachineConfigOverride{Name: m.Name, UID: m.UID, Config: &cabptv1.MachineConfigOverlay{ConfigSecretRef: &cabptv1.SecretKeyReference{Name: m.Name + "-baseline", Key: "value"}, ConfigRevision: "node-3", StrategicPatches: []string{"node-first", "node-second"}}, TalosEndpoint: &cabptv1.TalosEndpoint{Address: "unused-egress:50000", ServerName: m.Name + ".example.test", Node: m.Name}})
-						require.NoError(t, c.Create(ctx, &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: m.Name + "-baseline", Namespace: "default"}, Data: map[string][]byte{"value": []byte("private-fixture")}}))
-					}
 					secondDesired, err := f.tcp.Spec.EffectiveTalosConfigSpec(second)
 					require.NoError(t, err)
 					f.controlPlane.talosConfigs[second.Name].Spec = *secondDesired

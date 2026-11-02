@@ -30,7 +30,7 @@ func (suite *ControllersSuite) TestBootstrapSkipsAClusterWithEtcdData() {
 	g.Expect(fakeClient.Create(suite.ctx, n)).To(Succeed())
 	g.Expect(createSecrets(suite.ctx, fakeClient, cluster, suite.secretsBundle, machineAddress)).To(Succeed())
 
-	g.Expect(controllers.BootstrapCluster(r, suite.ctx, tcp, []clusterv1.Machine{*m})).To(Succeed())
+	g.Expect(controllers.BootstrapCluster(r, suite.ctx, cluster, tcp, []clusterv1.Machine{*m})).To(Succeed())
 	g.Expect(machineService.getBootstrapCalls()).To(BeZero())
 }
 
@@ -50,7 +50,7 @@ func (suite *ControllersSuite) TestBootstrapBootstrapsAClusterWithoutEtcdData() 
 	g.Expect(fakeClient.Create(suite.ctx, n)).To(Succeed())
 	g.Expect(createSecrets(suite.ctx, fakeClient, cluster, suite.secretsBundle, machineAddress)).To(Succeed())
 
-	g.Expect(controllers.BootstrapCluster(r, suite.ctx, tcp, []clusterv1.Machine{*m})).To(Succeed())
+	g.Expect(controllers.BootstrapCluster(r, suite.ctx, cluster, tcp, []clusterv1.Machine{*m})).To(Succeed())
 	g.Expect(machineService.getBootstrapCalls()).To(Equal(1))
 }
 

@@ -13,6 +13,7 @@ import (
 	sharedclient "github.com/siderolabs/cluster-api-bootstrap-provider-talos/pkg/talosclient"
 	controlplanev1 "github.com/siderolabs/cluster-api-control-plane-provider-talos/api/v1beta1"
 	talosclient "github.com/siderolabs/talos/pkg/machinery/client"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	clusterv1 "sigs.k8s.io/cluster-api/api/core/v1beta2"
@@ -53,9 +54,26 @@ func (r *TalosControlPlaneReconciler) talosClientForMachine(ctx context.Context,
 	if r.APIReader == nil {
 		return nil, nil, fmt.Errorf("APIReader is required for Talos identity lookup")
 	}
-	endpoint, err := talosEndpointForMachine(tcp, machine)
-	if err != nil {
-		return nil, nil, err
+	var endpoint cabptv1.TalosEndpoint
+	if machine.Spec.Bootstrap.ConfigRef.IsDefined() {
+		config := &cabptv1.TalosConfig{}
+		if err := r.APIReader.Get(ctx, types.NamespacedName{Namespace: machine.Namespace, Name: machine.Spec.Bootstrap.ConfigRef.Name}, config); err != nil {
+			return nil, nil, err
+		}
+		owner := metav1.GetControllerOf(config)
+		if owner == nil || owner.APIVersion != clusterv1.GroupVersion.String() || owner.Kind != "Machine" || owner.Name != machine.Name || owner.UID != machine.UID {
+			return nil, nil, fmt.Errorf("native TalosConfig owner identity changed")
+		}
+		if config.Spec.TalosEndpoint != nil {
+			endpoint = *config.Spec.TalosEndpoint
+		}
+	}
+	if endpoint.Address == "" {
+		var err error
+		endpoint, err = talosEndpointForMachine(tcp, machine)
+		if err != nil {
+			return nil, nil, err
+		}
 	}
 	clusterName := tcp.Labels[clusterv1.ClusterNameLabel]
 	for _, ref := range tcp.OwnerReferences {

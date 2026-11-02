@@ -523,9 +523,9 @@ func (r *TalosControlPlaneReconciler) resumeOwnerPlan(ctx context.Context, tcp *
 	if !bytes.Equal(journal.Configuration, plan.Configuration) {
 		return true, ownerError("receipt configuration mismatch")
 	}
-	accepted, err := op.DecodeAcceptedIntent(output.Data[op.AcceptedIntentKey])
-	if err != nil || accepted.TransactionID != plan.Intent.TransactionID || accepted.MachineUID != machine.UID || accepted.TalosConfigUID != config.UID || !reflect.DeepEqual(accepted.Image, journal.TargetImage) {
-		return true, ownerError("accepted intent mismatch")
+	accepted, err := op.AcceptedImage(ctx, r.APIReader, machine, config)
+	if err != nil || journal.TransactionID != plan.Intent.TransactionID || !reflect.DeepEqual(accepted, journal.TargetImage) {
+		return true, ownerError("activated image state mismatch")
 	}
 	if plan.Intent.Phase == op.OwnerReleased {
 		if err := op.ConsumeReceipt(ctx, r.Client, journalSecret, journal); err != nil {

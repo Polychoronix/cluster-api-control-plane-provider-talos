@@ -213,6 +213,7 @@ func (r *TalosControlPlaneReconciler) buildInPlacePlan(
 	if err != nil {
 		return nil, err
 	}
+	desiredSpec.TalosEndpoint = current.Spec.TalosEndpoint
 	desiredTalosConfig.Spec = *desiredSpec
 	plan.desiredTalosConfig = desiredTalosConfig
 

@@ -25,7 +25,6 @@ type TalosControlPlaneTemplateResource struct {
 }
 
 // TalosControlPlaneTemplateResourceSpec defines the desired state of TalosControlPlane through a template.
-// +kubebuilder:validation:XValidation:rule="!has(self.machineConfigOverrides) || !has(self.controlPlaneConfig.controlplane.machineConfig) || self.machineConfigOverrides.all(x, !has(x.config))",message="override config cannot coexist with shared machineConfig"
 type TalosControlPlaneTemplateResourceSpec struct {
 	// MachineTemplate contains information about how control plane Machines should be shaped.
 	// For ClusterClass / topology, ClusterClass.spec.controlPlane.machineInfrastructure.templateRef

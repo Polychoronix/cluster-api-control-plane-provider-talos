@@ -118,7 +118,6 @@ const (
 )
 
 // TalosControlPlaneSpec defines the desired state of TalosControlPlane
-// +kubebuilder:validation:XValidation:rule="!has(self.machineConfigOverrides) || !has(self.controlPlaneConfig.controlplane.machineConfig) || self.machineConfigOverrides.all(x, !has(x.config))",message="override config cannot coexist with shared machineConfig"
 type TalosControlPlaneSpec struct {
 	// Number of desired machines. Defaults to 1. When stacked etcd is used only
 	// odd numbers are permitted, as per [etcd best practice](https://etcd.io/docs/v3.3.12/faq/#why-an-odd-number-of-cluster-members).

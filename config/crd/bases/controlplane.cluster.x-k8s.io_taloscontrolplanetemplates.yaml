@@ -513,10 +513,6 @@ spec:
                     required:
                     - controlPlaneConfig
                     type: object
-                    x-kubernetes-validations:
-                    - message: override config cannot coexist with shared machineConfig
-                      rule: '!has(self.machineConfigOverrides) || !has(self.controlPlaneConfig.controlplane.machineConfig)
-                        || self.machineConfigOverrides.all(x, !has(x.config))'
                 required:
                 - spec
                 type: object

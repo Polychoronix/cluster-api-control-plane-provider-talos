@@ -129,16 +129,13 @@ func TestOwnerTransactionEnvtest(t *testing.T) {
 	require.NoError(t, err)
 	require.NotEmpty(t, journal.Data[op.ConsumedReceiptKey])
 	require.NotEmpty(t, journal.Data[op.ReceiptKey])
-	// Fresh production creation path supplies initial-origin markers only on Create.
-	ref, err := f.r.generateTalosConfig(t.Context(), f.tcp, "fresh-bootstrap", &bootstrapv1.TalosConfigSpec{GenerateType: "controlplane"})
+	// The real fresh creator propagates consent without origin-marker aliases.
+	ref, err := f.r.generateTalosConfig(t.Context(), f.tcp, "fresh-bootstrap", &bootstrapv1.TalosConfigSpec{GenerateType: "controlplane", Manage: true})
 	require.NoError(t, err)
 	fresh := &bootstrapv1.TalosConfig{}
 	require.NoError(t, api.Get(t.Context(), client.ObjectKey{Namespace: f.tcp.Namespace, Name: ref.Name}, fresh))
-	require.Equal(t, f.tcp.Name, fresh.Annotations[op.InitialControlPlaneNameAnnotation])
-	require.Equal(t, string(f.tcp.UID), fresh.Annotations[op.InitialControlPlaneUIDAnnotation])
-	require.NoError(t, api.Get(t.Context(), client.ObjectKeyFromObject(f.config), f.config))
-	require.Empty(t, f.config.Annotations[op.InitialControlPlaneNameAnnotation], "existing config never retroactively receives initial provenance")
-	t.Log("actual API owner Create race, lost patch response, stale RV CAS, Released ambiguity, receipt consumption/Consumed cleanup and fresh TC provenance exercised; executor receipts fixture-produced")
+	require.True(t, fresh.Spec.Manage)
+	t.Log("actual API owner Create race, lost patch response, stale RV CAS, Released ambiguity, receipt consumption/Consumed cleanup and fresh TC consent exercised; executor receipts fixture-produced")
 	exerciseRetiringOwnerCleanup(t, api)
 	exerciseNativeDeletionUIDFence(t, api)
 	exerciseNativeReleaseIntentFence(t, api)
@@ -167,7 +164,7 @@ func (c *retiringOwnerFaultClient) Delete(ctx context.Context, object client.Obj
 }
 
 // This tests real API recovery of a fully witnessed fixture-produced executor
-// receipt. It does not claim actual Talos execution or adoption activation.
+// receipt. Actual Talos execution and activation are exercised separately.
 func exerciseRetiringOwnerCleanup(t *testing.T, api client.Client) {
 	for _, boundary := range []string{"detach", "delete", "active"} {
 		t.Run("retirement-"+boundary, func(t *testing.T) {

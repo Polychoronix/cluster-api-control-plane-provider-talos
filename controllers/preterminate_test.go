@@ -214,6 +214,8 @@ func newPreTerminateTCP() *controlplanev1.TalosControlPlane {
 				ControlPlaneConfig: cabptv1.TalosConfigSpec{GenerateType: "controlplane"},
 			},
 		},
+		// Direct hook-ordering tests model an already-authorized native owner.
+		Status: controlplanev1.TalosControlPlaneStatus{Conditions: []metav1.Condition{{Type: cabptv1.ActivationReadyCondition, Status: metav1.ConditionTrue, Reason: "FixtureActivated", LastTransitionTime: metav1.Now()}}},
 	}
 }
 

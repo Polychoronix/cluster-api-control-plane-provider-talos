@@ -93,14 +93,12 @@ func newOwnerFixture(t *testing.T, api client.Client, namespaces ...string) *own
 	require.NoError(t, api.Update(t.Context(), config))
 	infra.SetOwnerReferences(config.OwnerReferences)
 	require.NoError(t, api.Update(t.Context(), infra))
-	// Positive native bootstrap lineage is a fixture here, not a renderer claim.
-	intent, err := op.EncodeAcceptedIntent(op.AcceptedIntent{MachineUID: machine.UID, TalosConfigUID: config.UID})
-	require.NoError(t, err)
 	seedName := machine.Name + "-original-seed"
-	seed := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: seedName, Namespace: machine.Namespace, OwnerReferences: []metav1.OwnerReference{*metav1.NewControllerRef(config, bootstrapv1.GroupVersion.WithKind("TalosConfig"))}}, Data: map[string][]byte{"value": []byte("fixture-bootstrap"), op.AcceptedIntentKey: intent}}
+	seed := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: seedName, Namespace: machine.Namespace, OwnerReferences: []metav1.OwnerReference{*metav1.NewControllerRef(config, bootstrapv1.GroupVersion.WithKind("TalosConfig"))}}, Data: map[string][]byte{"value": []byte("fixture-bootstrap")}}
 	require.NoError(t, api.Create(t.Context(), seed))
 	machine.Spec.Bootstrap.DataSecretName = &seedName
 	require.NoError(t, api.Update(t.Context(), machine))
+	activateOwnerUnitFixture(t, api, cluster, tcp, machine, config, seed)
 	r := &TalosControlPlaneReconciler{Client: api, APIReader: api, Scheme: scheme, Log: ctrl.Log}
 	plane := &ControlPlane{TCP: tcp, Cluster: cluster, Machines: collections.FromMachines(machine), infraObjects: map[string]*unstructured.Unstructured{machine.Name: infra}, talosConfigs: map[string]*bootstrapv1.TalosConfig{machine.Name: config}}
 	update, err := r.buildInPlacePlan(tcp, plane, machine)
@@ -240,12 +238,7 @@ func ownerReceipt(t *testing.T, f *ownerFixture, secret *corev1.Secret, plan *ow
 	require.NoError(t, op.WriteJournal(t.Context(), f.r.Client, journalSecret, j, receipt))
 	config := &bootstrapv1.TalosConfig{}
 	require.NoError(t, f.r.Client.Get(t.Context(), client.ObjectKeyFromObject(f.config), config))
-	output := &corev1.Secret{}
-	require.NoError(t, f.r.Client.Get(t.Context(), client.ObjectKey{Namespace: config.Namespace, Name: config.Status.DataSecretName}, output))
-	accepted, err := op.EncodeAcceptedIntent(op.AcceptedIntent{MachineUID: f.machine.UID, TalosConfigUID: f.config.UID, TransactionID: j.TransactionID, Image: j.TargetImage})
-	require.NoError(t, err)
-	output.Data[op.AcceptedIntentKey] = accepted
-	require.NoError(t, f.r.Client.Update(t.Context(), output))
+	require.NoError(t, op.RecordAcceptedImage(t.Context(), f.r.Client, f.r.APIReader, f.machine, config, j.TargetImage))
 }
 func cleanupCoreFlags(t *testing.T, f *ownerFixture) {
 	t.Helper()

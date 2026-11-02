@@ -190,7 +190,7 @@ func TestOwnerActualCABPTCoreReceiptCoupling(t *testing.T) {
 	require.NoError(t, e)
 	p, e := strconv.Atoi(port)
 	require.NoError(t, e)
-	tcp := &cp.TalosControlPlane{ObjectMeta: metav1.ObjectMeta{Name: "coupling", Namespace: ns}, Spec: cp.TalosControlPlaneSpec{Version: "v1.35.0", Replicas: ptr.To(int32(2)), Kubeconfig: cp.KubeconfigSpec{Mode: cp.KubeconfigModeExternal}}}
+	tcp := &cp.TalosControlPlane{ObjectMeta: metav1.ObjectMeta{Name: "coupling", Namespace: ns}, Spec: cp.TalosControlPlaneSpec{Version: "v1.35.0", Manage: true, Replicas: ptr.To(int32(2)), Kubeconfig: cp.KubeconfigSpec{Mode: cp.KubeconfigModeExternal}}}
 	cluster := &clusterv1.Cluster{ObjectMeta: metav1.ObjectMeta{Name: clusterName, Namespace: ns}, Spec: clusterv1.ClusterSpec{ControlPlaneEndpoint: clusterv1.APIEndpoint{Host: host, Port: int32(p)}, ControlPlaneRef: clusterv1.ContractVersionedObjectReference{APIGroup: cp.GroupVersion.Group, Kind: "TalosControlPlane", Name: tcp.Name}, InfrastructureRef: clusterv1.ContractVersionedObjectReference{APIGroup: "infrastructure.cluster.x-k8s.io", Kind: "HetznerCluster", Name: infraCluster.GetName()}}}
 	localKube := clientcmdapi.NewConfig()
 	localKube.Clusters[clusterName] = &clientcmdapi.Cluster{Server: cfg.Host, CertificateAuthorityData: cfg.CAData}
@@ -238,12 +238,11 @@ func TestOwnerActualCABPTCoreReceiptCoupling(t *testing.T) {
 		if i == 1 {
 			require.NoError(t, api.Get(ctx, client.ObjectKeyFromObject(tcp), tcp))
 			before := tcp.DeepCopy()
-			tcp.Spec.MachineConfigOverrides = []cp.MachineConfigOverride{{Name: machines[0].Name, UID: machines[0].UID, TalosEndpoint: &endpoints[0]}}
 			tcp.Spec.ControlPlaneConfig.ControlPlaneConfig.TalosEndpoint = &endpoints[1]
 			require.NoError(t, api.Patch(ctx, tcp, client.MergeFrom(before)))
 		}
-		// Actual fresh creator, not retrospective config/pivot marking. Infrastructure
-		// and Node readiness are not supplied until the real renderer emits lineage.
+		// Actual fresh creator; infrastructure and Node readiness are supplied only
+		// after the real standalone-capable renderer emits its immutable seed.
 		_, e := r.bootControlPlane(ctx, cluster, tcp)
 		require.NoError(t, e)
 		var created *clusterv1.Machine
@@ -265,7 +264,7 @@ func TestOwnerActualCABPTCoreReceiptCoupling(t *testing.T) {
 		})
 		tc := &bootstrapv1.TalosConfig{}
 		seed := &corev1.Secret{}
-		ownerRuntimeEventually(t, "real initial renderer accepted lineage", 30*time.Second, func() error {
+		ownerRuntimeEventually(t, "real initial renderer without seed receipts", 30*time.Second, func() error {
 			if e := api.Get(ctx, client.ObjectKey{Namespace: ns, Name: created.Spec.Bootstrap.ConfigRef.Name}, tc); e != nil {
 				return e
 			}
@@ -275,12 +274,11 @@ func TestOwnerActualCABPTCoreReceiptCoupling(t *testing.T) {
 			if e := api.Get(ctx, client.ObjectKey{Namespace: ns, Name: tc.Status.DataSecretName}, seed); e != nil {
 				return e
 			}
-			accepted, e := op.DecodeAcceptedIntent(seed.Data[op.AcceptedIntentKey])
-			if e != nil {
-				return fmt.Errorf("accepted intent absent")
+			if _, found := seed.Data["acceptedIntent"]; found {
+				return fmt.Errorf("retired seed receipt present")
 			}
-			if accepted.MachineUID != created.UID || accepted.TalosConfigUID != tc.UID || accepted.TransactionID != "" {
-				return fmt.Errorf("wrong initial lineage")
+			if !metav1.IsControlledBy(seed, tc) {
+				return fmt.Errorf("seed controller owner missing")
 			}
 			return nil
 		})
@@ -309,7 +307,7 @@ func TestOwnerActualCABPTCoreReceiptCoupling(t *testing.T) {
 		require.NoError(t, api.Status().Patch(ctx, infra, client.MergeFrom(before)))
 		node := &corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: m.Name, Labels: map[string]string{"node-role.kubernetes.io/control-plane": ""}}, Spec: corev1.NodeSpec{ProviderID: providerID}}
 		require.NoError(t, api.Create(ctx, node))
-		node.Status = corev1.NodeStatus{NodeInfo: corev1.NodeSystemInfo{KubeletVersion: "v1.35.0"}, Conditions: []corev1.NodeCondition{{Type: corev1.NodeReady, Status: corev1.ConditionTrue}, {Type: corev1.NodeMemoryPressure, Status: corev1.ConditionFalse}, {Type: corev1.NodeDiskPressure, Status: corev1.ConditionFalse}, {Type: corev1.NodePIDPressure, Status: corev1.ConditionFalse}}}
+		node.Status = corev1.NodeStatus{NodeInfo: corev1.NodeSystemInfo{KubeletVersion: "v1.35.0", BootID: "initial-boot"}, Conditions: []corev1.NodeCondition{{Type: corev1.NodeReady, Status: corev1.ConditionTrue}, {Type: corev1.NodeMemoryPressure, Status: corev1.ConditionFalse}, {Type: corev1.NodeDiskPressure, Status: corev1.ConditionFalse}, {Type: corev1.NodePIDPressure, Status: corev1.ConditionFalse}}}
 		require.NoError(t, api.Status().Update(ctx, node))
 		pod := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "kube-apiserver-" + m.Name, Namespace: "kube-system", Labels: map[string]string{"component": "kube-apiserver"}}, Spec: corev1.PodSpec{NodeName: m.Name, Containers: []corev1.Container{{Name: "kube-apiserver", Image: "registry/kube-apiserver:v1.35.0"}}}}
 		require.NoError(t, api.Create(ctx, pod))
@@ -341,6 +339,7 @@ func TestOwnerActualCABPTCoreReceiptCoupling(t *testing.T) {
 	_, e = r.Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(tcp)})
 	require.NoError(t, e)
 	require.NoError(t, api.Get(ctx, client.ObjectKeyFromObject(tcp), tcp))
+	require.True(t, conditions.IsTrue(tcp, bootstrapv1.ActivationReadyCondition), "native complete inventory auto-activates before rollout")
 	tcp.Spec.ControlPlaneConfig.ControlPlaneConfig.ConfigRevision = "registry-change"
 	tcp.Spec.ControlPlaneConfig.ControlPlaneConfig.StrategicPatchSecretRefs = []bootstrapv1.SecretKeyReference{{Name: "registry", Key: "patch"}}
 	require.NoError(t, api.Create(ctx, &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "registry", Namespace: ns}, Data: map[string][]byte{"patch": []byte("apiVersion: v1alpha1\nkind: RegistryAuthConfig\nname: ghcr.io\nusername: fixture\npassword: " + ownerRuntimePrivate + "\n")}}))
@@ -475,9 +474,9 @@ func TestOwnerActualCABPTCoreReceiptCoupling(t *testing.T) {
 	}
 	output := &corev1.Secret{}
 	require.NoError(t, api.Get(ctx, client.ObjectKey{Namespace: ns, Name: originalConfig.Status.DataSecretName}, output))
-	accepted, e := op.DecodeAcceptedIntent(output.Data[op.AcceptedIntentKey])
+	_, e = op.AcceptedImage(ctx, api, machines[0], originalConfig)
 	require.NoError(t, e)
-	require.Equal(t, plan.Intent.TransactionID, accepted.TransactionID)
+	require.NotContains(t, output.Data, "acceptedIntent")
 	require.NoError(t, api.Get(ctx, client.ObjectKeyFromObject(tcp), tcp))
 	require.Equal(t, "v1.35.0", *tcp.Status.Version)
 	t.Logf("actual CACPPT owner -> CABPT subprocess renderer/Apply/Observed receipt -> core cleanup -> owner consumption/status; two simulated CP nodes, no three-node rollout claim; logs bytes core=%d CABPT=%d", len(coreLogs.text()), len(bootstrapLogs.text()))

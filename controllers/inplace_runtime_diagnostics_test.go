@@ -7,7 +7,6 @@ import (
 	"context"
 	"fmt"
 	bootstrapv1 "github.com/siderolabs/cluster-api-bootstrap-provider-talos/api/v1beta1"
-	op "github.com/siderolabs/cluster-api-bootstrap-provider-talos/pkg/updateoperation"
 	cp "github.com/siderolabs/cluster-api-control-plane-provider-talos/api/v1beta1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	clusterv1 "sigs.k8s.io/cluster-api/api/core/v1beta2"
@@ -33,5 +32,5 @@ func ownerRuntimeLineageState(ctx context.Context, api client.Client, machine *c
 	infra.SetAPIVersion(m.Spec.InfrastructureRef.APIGroup + "/v1beta1")
 	infra.SetKind(m.Spec.InfrastructureRef.Kind)
 	_ = api.Get(ctx, client.ObjectKey{Namespace: m.Namespace, Name: m.Spec.InfrastructureRef.Name}, infra)
-	return fmt.Sprintf("TC %s UID=%s owners=%v initialTCP=%s/%s generation=%d observed=%d conditions=%s; Machine UID=%s owners=%v bootstrapRef=%v seedPresent=%t NodeRef=%s; Infra UID=%s owners=%v cloned=%s/%s; TCP UID=%s; Cluster UID=%s initialization=%v endpoint=%v", c.Name, c.UID, c.OwnerReferences, c.Annotations[op.InitialControlPlaneNameAnnotation], c.Annotations[op.InitialControlPlaneUIDAnnotation], c.Generation, c.Status.ObservedGeneration, strings.Join(conditionStates, ","), m.UID, m.OwnerReferences, m.Spec.Bootstrap.ConfigRef, m.Spec.Bootstrap.DataSecretName != nil, m.Status.NodeRef.Name, infra.GetUID(), infra.GetOwnerReferences(), infra.GetAnnotations()[clusterv1.TemplateClonedFromNameAnnotation], infra.GetAnnotations()[clusterv1.TemplateClonedFromGroupKindAnnotation], owner.UID, cl.UID, cl.Status.Initialization, cl.Spec.ControlPlaneEndpoint)
+	return fmt.Sprintf("TC %s UID=%s owners=%v generation=%d observed=%d conditions=%s; Machine UID=%s owners=%v bootstrapRef=%v seedPresent=%t NodeRef=%s; Infra UID=%s owners=%v cloned=%s/%s; TCP UID=%s; Cluster UID=%s initialization=%v endpoint=%v", c.Name, c.UID, c.OwnerReferences, c.Generation, c.Status.ObservedGeneration, strings.Join(conditionStates, ","), m.UID, m.OwnerReferences, m.Spec.Bootstrap.ConfigRef, m.Spec.Bootstrap.DataSecretName != nil, m.Status.NodeRef.Name, infra.GetUID(), infra.GetOwnerReferences(), infra.GetAnnotations()[clusterv1.TemplateClonedFromNameAnnotation], infra.GetAnnotations()[clusterv1.TemplateClonedFromGroupKindAnnotation], owner.UID, cl.UID, cl.Status.Initialization, cl.Spec.ControlPlaneEndpoint)
 }

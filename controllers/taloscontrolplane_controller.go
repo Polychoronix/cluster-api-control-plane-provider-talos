@@ -17,7 +17,6 @@ import (
 	"github.com/go-logr/logr"
 	"github.com/pkg/errors"
 	cabptv1 "github.com/siderolabs/cluster-api-bootstrap-provider-talos/api/v1beta1"
-	op "github.com/siderolabs/cluster-api-bootstrap-provider-talos/pkg/updateoperation"
 	machineapi "github.com/siderolabs/talos/pkg/machinery/api/machine"
 	talosclient "github.com/siderolabs/talos/pkg/machinery/client"
 	"github.com/siderolabs/talos/pkg/machinery/constants"
@@ -174,25 +173,10 @@ func (r *TalosControlPlaneReconciler) Reconcile(ctx context.Context, req ctrl.Re
 	// The set-once initialization field is used instead of the InfrastructureReady
 	// condition, as the condition can go back to false during the cluster lifecycle
 	// and would deadlock the control plane bootstrap.
-	if tcp.DeletionTimestamp.IsZero() && !ptr.Deref(cluster.Status.Initialization.InfrastructureProvisioned, false) && (tcp.Spec.Management == nil || tcp.Spec.Management.Mode != cabptv1.ManagementModeManaged) {
+	if tcp.DeletionTimestamp.IsZero() && !ptr.Deref(cluster.Status.Initialization.InfrastructureProvisioned, false) {
 		logger.Info("cluster infra not provisioned")
 
 		return ctrl.Result{RequeueAfter: 20 * time.Second}, nil
-	}
-
-	// Reject stale pins and ambiguous per-node policy before deferred status,
-	// deletion hooks, etcd or any other lifecycle operation can act on it.
-	if tcp.DeletionTimestamp.IsZero() && len(tcp.Spec.MachineConfigOverrides) != 0 {
-		if err := r.validateLiveMachineConfigPins(ctx, tcp); err != nil {
-			return ctrl.Result{}, err
-		}
-		inventory, err := r.getControlPlaneMachinesForTCP(ctx, util.ObjectKey(cluster), tcp)
-		if err != nil {
-			return ctrl.Result{}, err
-		}
-		if err := validateMachineConfigInventory(tcp, inventory.Items); err != nil {
-			return ctrl.Result{}, err
-		}
 	}
 
 	// Initialize the patch helper.
@@ -215,8 +199,6 @@ func (r *TalosControlPlaneReconciler) Reconcile(ctx context.Context, req ctrl.Re
 
 		return ctrl.Result{}, nil
 	}
-	// Durably activated imported inventory gets lifecycle protection even before
-	// infrastructure initialization, but no provisioning/update phase bypasses it.
 	if tcp.DeletionTimestamp.IsZero() && !ptr.Deref(cluster.Status.Initialization.InfrastructureProvisioned, false) {
 		return ctrl.Result{RequeueAfter: requeueDuration}, nil
 	}
@@ -286,9 +268,12 @@ func (r *TalosControlPlaneReconciler) reconcile(ctx context.Context, cluster *cl
 
 		return ctrl.Result{}, err
 	}
-
-	if err := validateMachineConfigInventory(tcp, ownedMachines.Items); err != nil {
-		return ctrl.Result{}, err
+	if !conditions.IsTrue(tcp, cabptv1.ActivationReadyCondition) {
+		// Native template ownership is required even before node activation.
+		if err := r.reconcileExternalReference(ctx, tcp.Spec.MachineTemplate.Spec.InfrastructureRef, cluster); err != nil {
+			return ctrl.Result{}, err
+		}
+		return r.reconcileInitialProvisioning(ctx, cluster, tcp, &ownedMachines)
 	}
 
 	// Machine deletion hooks are serviced before anything else in this reconcile. A Machine held
@@ -453,7 +438,7 @@ func (r *TalosControlPlaneReconciler) listControlPlaneMachinesForCluster(ctx con
 }
 
 // getControlPlaneMachinesForTCP only returns Machines whose controller identity
-// belongs to this exact TCP. Labels and cache presence never authorize adoption.
+// belongs to this exact TCP. Labels and cache presence never authorize foreign Machines.
 func (r *TalosControlPlaneReconciler) getControlPlaneMachinesForTCP(ctx context.Context, cluster client.ObjectKey, tcp *controlplanev1.TalosControlPlane) (clusterv1.MachineList, error) {
 	list, err := r.listControlPlaneMachinesForCluster(ctx, cluster)
 	if err != nil {
@@ -648,9 +633,15 @@ func (r *TalosControlPlaneReconciler) bootControlPlane(ctx context.Context, clus
 	return ctrl.Result{RequeueAfter: 20 * time.Second}, nil
 }
 
-func (r *TalosControlPlaneReconciler) bootstrapCluster(ctx context.Context, tcp *controlplanev1.TalosControlPlane, machines []clusterv1.Machine) error {
-	ctx, cancel := context.WithTimeout(ctx, time.Second*5)
-
+func (r *TalosControlPlaneReconciler) bootstrapCluster(ctx context.Context, cluster *clusterv1.Cluster, tcp *controlplanev1.TalosControlPlane, machines []clusterv1.Machine) error {
+	if ptr.Deref(cluster.Status.Initialization.ControlPlaneInitialized, false) || conditions.IsTrue(cluster, "ControlPlaneInitialized") {
+		if !tcp.Status.Bootstrapped {
+			r.Log.Info("owning Cluster is already initialized; skipping Talos Bootstrap")
+		}
+		tcp.Status.Bootstrapped = true
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 
 	if len(machines) == 0 {
@@ -735,7 +726,7 @@ func (r *TalosControlPlaneReconciler) generateTalosConfig(ctx context.Context, t
 			Name:            name,
 			Namespace:       tcp.Namespace,
 			OwnerReferences: []metav1.OwnerReference{owner},
-			Annotations:     map[string]string{op.InitialControlPlaneNameAnnotation: tcp.Name, op.InitialControlPlaneUIDAnnotation: string(tcp.UID)},
+			Annotations:     map[string]string{},
 		},
 		Spec: *spec,
 	}
@@ -1244,7 +1235,7 @@ func (r *TalosControlPlaneReconciler) reconcileMachines(ctx context.Context, clu
 		return res, err
 	default:
 		if !tcp.Status.Bootstrapped {
-			if err := r.bootstrapCluster(ctx, tcp, machines.Items); err != nil {
+			if err := r.bootstrapCluster(ctx, cluster, tcp, machines.Items); err != nil {
 				conditions.Set(tcp, metav1.Condition{
 					Type:    string(controlplanev1.MachinesBootstrapped),
 					Status:  metav1.ConditionFalse,

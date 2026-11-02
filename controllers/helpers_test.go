@@ -18,7 +18,6 @@ import (
 	"github.com/gobuffalo/flect"
 	"github.com/pkg/errors"
 	bootstrapv1 "github.com/siderolabs/cluster-api-bootstrap-provider-talos/api/v1beta1"
-	op "github.com/siderolabs/cluster-api-bootstrap-provider-talos/pkg/updateoperation"
 	"github.com/siderolabs/crypto/tls"
 	"github.com/siderolabs/crypto/x509"
 	"github.com/siderolabs/gen/xslices"
@@ -136,9 +135,8 @@ func newFakeClient(initObjs ...client.Object) client.Client {
 		Build()
 }
 
-// These legacy controller unit tests simulate the Machine/bootstrap controllers.
-// The fixture creates settled owners and accepted seed identity explicitly; this
-// is not evidence of real CABPT rendering, Node readiness or generic adoption.
+// Legacy controller unit tests simulate Machine/bootstrap reconciliation.
+// Their seed fixture makes no renderer or activation claim.
 func settleFakeBootstrap(ctx context.Context, c client.Client, m *clusterv1.Machine) error {
 	if !m.Spec.Bootstrap.ConfigRef.IsDefined() {
 		m.Spec.Bootstrap.ConfigRef = clusterv1.ContractVersionedObjectReference{APIGroup: bootstrapv1.GroupVersion.Group, Kind: "TalosConfig", Name: m.Name}
@@ -173,12 +171,8 @@ func settleFakeBootstrap(ctx context.Context, c client.Client, m *clusterv1.Mach
 	if m.Spec.Bootstrap.DataSecretName != nil {
 		return nil
 	}
-	intent, err := op.EncodeAcceptedIntent(op.AcceptedIntent{MachineUID: m.UID, TalosConfigUID: tc.UID})
-	if err != nil {
-		return err
-	}
 	name := m.Name + "-fixture-seed"
-	seed := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: m.Namespace, OwnerReferences: []metav1.OwnerReference{*metav1.NewControllerRef(tc, bootstrapv1.GroupVersion.WithKind("TalosConfig"))}}, Data: map[string][]byte{"value": []byte("fixture-generated-bootstrap"), op.AcceptedIntentKey: intent}}
+	seed := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: m.Namespace, OwnerReferences: []metav1.OwnerReference{*metav1.NewControllerRef(tc, bootstrapv1.GroupVersion.WithKind("TalosConfig"))}}, Data: map[string][]byte{"value": []byte("fixture-generated-bootstrap")}}
 	if err := c.Create(ctx, seed); err != nil {
 		return err
 	}
