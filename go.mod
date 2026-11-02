@@ -13,7 +13,7 @@ require (
 	github.com/onsi/gomega v1.42.1
 	github.com/pkg/errors v0.9.1
 	github.com/siderolabs/capi-utils v0.0.0-20260203103127-995e8c672207
-  github.com/siderolabs/cluster-api-bootstrap-provider-talos v0.9.0-craci.3
+	github.com/siderolabs/cluster-api-bootstrap-provider-talos v0.9.0-craci.3
 	github.com/siderolabs/crypto v0.6.5
 	github.com/siderolabs/gen v0.8.7
 	github.com/siderolabs/go-retry v0.3.3

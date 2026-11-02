@@ -404,6 +404,9 @@ func (suite *IntegrationSuite) Test05ScaleControlPlaneToZero() {
 
 // TestIntegration runs integration tests.
 func TestIntegration(t *testing.T) {
+	if testing.Short() {
+		t.Skip("existing-cluster integration is disabled in short mode")
+	}
 	version := os.Getenv("WORKLOAD_TALOS_VERSION")
 
 	var err error
