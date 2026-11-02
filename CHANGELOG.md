@@ -2,17 +2,19 @@
 
 ### Changes
 
-* Match the CABPT requirement and personal-fork replacement to its published `v0.9.0-craci.1` prerelease at `84b9dcc2be13191c9545a2c627335b0f28e67128`; refresh verified module checksums. The matching control-plane release remains unpublished.
-* Preserve matched CABPT Secret-backed inputs and explicit Talos endpoints across control-plane APIs, templates and conversions; add namespace-local, Machine-name/UID-pinned overrides.
+* Select future CABPT `v0.9.0-craci.3`; local paired development uses `go.work`, not a committed local replacement. CABPT publication must precede CACPPT CI/tagging.
+* Propagate default-false `spec.manage` across both served APIs and templates; remove inventory/mode/approval status, UID override lists and imported owner-transfer machinery.
 * Honor runtime-extension namespace selectors and request settings, retaining fail-closed in-place error handling.
 * Support read-only externally managed standard Cluster kubeconfigs without credential rotation or ownership changes.
 * Recover frozen private control-plane owner plans with no-create UID/resourceVersion writes and exact completion receipt consumption; fence concurrent lifecycle and premature status advancement.
 * Report completed control-plane versions from running per-node API-server observations, not desired Machine versions.
-* Add isolated owner restart/CAS regressions and actual two-CP CABPT/core subprocess coupling with simulated Talos backends. Matched control-plane release publication and live adoption remain separately gated.
-* Add canonical manifest-approved control-plane inventory observation, strict pause fences, exact-controller lifecycle selection and crash-safe aggregate Machine-owner association; keep partial/stale/foreign inventory inactive and preserve imported inputs.
+* Couple complete currently owned native CAPI inventory to the same CABPT observer and activation record; require actual Node/Talos boot-ID, kubelet-image, CA/configuration and healthy voting-etcd witnesses. Preserve each native child's own Talos transport during shared policy updates.
+* Support CAPI-born standalone seeds without lineage receipts; accepted image state is private activation state, not bootstrap output. Existing hosts are replaced, never adopted in place.
 * Preserve ordinary native retirement for activated inventory through a separate durable idle-operation guard, exact Machine deletion/hook preconditions and narrowly witnessed Consumed cleanup on deleting authorities; retain strict pause and active/ambiguous holds.
 * Align release packaging with the personal GHCR fork, actual source/revision/tag OCI labels, prerelease classification and generated-manifest component checksums; retain the existing 0.9/v1beta2 metadata contract and one tag publisher.
 * Capture target-specific buildx image metadata and thread its validated published digest through the shared native/Docker renderer; retain tagged references only for local rendering, without claiming image publication or altering provider logic.
+* Skip Talos Bootstrap when the owning Cluster is already control-plane initialized; genuinely fresh inspection and Bootstrap share a 30-second deadline.
+* Preserve native template ownership before activation, default observe-only mutation fencing and UID/RV-safe lifecycle/consumed cleanup. Ceph health remains an operator gate; no live actions or publication are part of this change.
 
 ## [CAPI Control Plane Provider Talos 0.5.13](https://github.com/talos-systems/cluster-api-control-plane-provider-talos/releases/tag/v0.5.13) (2026-04-27)
 

@@ -92,15 +92,14 @@ Historical upstream Talos compatibility declarations:
 
 ### Selecting an approved published provider source
 
-The personal bootstrap fork has published
-[`v0.9.0-craci.1`](https://github.com/Polychoronix/cluster-api-bootstrap-provider-talos/releases/tag/v0.9.0-craci.1)
-from `84b9dcc2be13191c9545a2c627335b0f28e67128`. Credential-free GoProxy/sumdb
-resolution selected that exact tag and source commit. This consumer now requires
-the same version, preserving the upstream Go module path through its personal-fork
-`replace`. **The matching control-plane release is not published yet.** Installation
-remains gated on both approved provider releases and verified asset checksums/access.
+The unreleased paired provider version is **v0.9.0-craci.3**. This consumer keeps
+the CABPT requirement pointing at that future personal-fork tag while preserving
+the upstream Go module path. Local builds/tests use a `go.work` containing both
+forks; do not commit a local replacement. CABPT must be tagged/published first so
+CACPPT source CI can resolve its dependency. Neither craci.3 provider is released
+by these source changes.
 
-After the matching control-plane release is published, select the **same explicit approved release version** from the
+For installation, select the **same explicit approved published release version** from the
 [personal bootstrap fork releases](https://github.com/Polychoronix/cluster-api-bootstrap-provider-talos/releases)
 and [personal control-plane fork releases](https://github.com/Polychoronix/cluster-api-control-plane-provider-talos/releases).
 Verify the version-specific component assets, provider metadata, checksums and actual
@@ -137,11 +136,10 @@ and a separately verified infrastructure provider for the required native lifecy
 
 ### Personal-fork prerelease packaging
 
-The paired provider version is **v0.9.0-craci.1**: the bootstrap prerelease exists,
-but the matching control-plane tag, image and release assets remain unpublished.
-The consumer source dependency cutover must pass eligible source CI before the
-user creates its matching release tag. Series 0.9 already declares the CAPI
-`v1beta2` contract in provider metadata.
+The next paired provider version is **v0.9.0-craci.3**, currently source-only.
+The CABPT tag must exist before this consumer's eligible source CI and release;
+the matching tag/images/assets remain a separately reviewed publication step.
+Series 0.9 retains the CAPI `v1beta2` provider metadata contract.
 
 This fork defaults local image output to
 `ghcr.io/polychoronix/cluster-api-control-plane-talos-controller`. The public-hosted
@@ -380,149 +378,57 @@ named `talos-topology-control-plane`, and control plane machines named
 See `config/samples/topology_v1alpha3_clusterclass_with_taloscontrolplanetemplate.yaml` for a ClusterClass / Cluster fragment including workers.
 That sample assumes the referenced infrastructure and worker bootstrap templates already exist.
 
-### Secret-backed inputs and per-Machine Talos endpoints
+### Shared inputs and native per-Machine transports
 
-The matched bootstrap provider's `configSecretRef`, ordered
-`strategicPatchSecretRefs`, `configRevision`, `machineConfig` and `talosEndpoint`
-are preserved in `spec.controlPlaneConfig.controlplane` and templates, including
-served-version conversion. References are `{name, key}` in the TalosConfig's
-namespace. A baseline replaces only the base; shared public and Secret patches
-remain ordered policy. A changed public spec triggers a requested update; use a
-new non-secret `configRevision` for changed bytes in a same-name Secret. There is
-no automatic Secret drift rollout.
+The matched bootstrap provider's namespace-local `configSecretRef`, ordered
+`strategicPatchSecretRefs`, public patches and `configRevision` remain shared
+`spec.controlPlaneConfig.controlplane` policy. Native generation can reuse the
+cluster Talos bundle without a full baseline. Secret material never enters public
+configuration, revisions or status. Secret changes alone do not trigger live drift
+rollout; a reviewed desired revision requests reconciliation.
 
-Use `spec.machineConfigOverrides` for existing per-node differences. The list is
-keyed by unique Machine `name`, with required exact `uid` and at least one
-`config` (the bootstrap provider's `MachineConfigOverlay`) or `talosEndpoint`:
+Each CAPI-created TalosConfig retains its own `talosEndpoint` during shared-policy
+updates: `address` is dial transport, `serverName` verifies TLS/SNI and optional
+`node` routes a single node through a proxy. A shared endpoint is the creation input,
+not permission to redirect already-created children. Clients never combine distinct
+TLS identities. Kubernetes Node address policy is unchanged; ordinary provisioning
+retains its existing address fallback where no explicit transport is supplied.
 
-```yaml
-machineConfigOverrides:
-  - name: example-control-plane-one
-    uid: <actual-existing-Machine-UID>
-    config:
-      configSecretRef: {name: example-node-baseline, key: value}
-      configRevision: reviewed-node-revision
-    talosEndpoint:
-      address: talos-egress.example:50000
-      serverName: example-control-plane-one.example.ts.net
-      node: example-control-plane-one
-```
-
-Namespace is implicit; no cross-namespace input. A reused name with another UID
-is a hard error **before** pre-terminate, etcd or lifecycle actions. Missing entries
-may remain inert before association. New Machines use shared-only inputs, and a
-new name colliding with a pinned entry fails rather than consuming it. An override
-`config` cannot coexist with shared `controlPlaneConfig.controlplane.machineConfig`:
-there is only one per-node slot. Put shared policy in the root public/Secret patch
-fields. Endpoint-only overrides may coexist with the shared slot. Every other
-shared field stays intact in creation, rollout equality and update plans.
-
-Each Machine gets its own imported-mTLS client: `address` is dial transport,
-`serverName` verifies TLS/SNI, and optional `node` routes every RPC through a proxy.
-Different identities are never combined in an endpoint list. Kubernetes node IPs
-are not changed; ordinary provisioning retains node-address fallback when no
-explicit endpoint exists. These input and transport seams alone **do not authorize
-adoption**. Use the read-only inventory and manifest approval guard below before
-transferring lifecycle responsibility; external kubeconfig mode alone is not a guard.
-
-Local tests exercise effective specs, UID/conflict fencing, actual served CRD
-admission and per-node mTLS RPCs (health, etcd, bootstrap and leave/remove), including
-distinct dial/SNI/targets and unchanged imported credentials. This is not a live
-adoption or verified Talos update-completion claim.
-
-### Read-only inventory and manifest activation
-
-For existing control-plane Machines, declare `spec.management` on the
-`TalosControlPlane` (or `spec.template.spec.management` on its template):
+### Unified native activation
 
 ```yaml
-management:
-  mode: Observe
-  inventoryRevision: import-1
-  machines:
-    - name: existing-control-plane-a
-      uid: exact-existing-machine-uid
+spec:
+  manage: true
 ```
 
-The inventory is namespace-local and UID-pinned; list every intended member, not a
-fixed three-node topology. `Observe` verifies settled Machine/bootstrap/infra
-references, existing seed and imported identities, actual workload Node identity
-and readiness, active Talos configuration, boot/version/kubelet observations and
-the complete consistent etcd member view. Shared plus per-Machine desired baseline
-and patches must render to the observed active configuration. Failed or incomplete
-inspection sets `InventoryVerified=False`; it is not replacement eligibility.
+`manage` defaults to `false`, meaning observe without Talos mutations. It is also
+available on TalosControlPlaneTemplate and propagates to newly created children.
+There are no Observe/Managed modes, manifest approval tokens, inventory revisions,
+Machine-name/UID override lists or initial owner-transfer transactions.
 
-Observation precedes lifecycle finalizers, deletion, bootstrap, identity ownership,
-template cloning, pre-terminate hooks and etcd audit. It writes only private
-provider-owned observation Secrets and TCP observation status/conditions; it does
-not mutate imported Machines, TalosConfigs, infrastructure, seeds or credentials.
-`Ready` and `Available` remain false because read-only health is not lifecycle
-activation. Cluster/TCP/Machine/TalosConfig/infrastructure pauses stop observation,
-snapshot refresh and ownership writes, allowing only `Paused` bookkeeping.
+The one observer validates exact currently owned CAPI Machine/TC/Infra/Node identities,
+original CABPT-owned seed and imported credentials. Complete rendered configuration
+must equal active Talos configuration. Actual kubelet-image and matching Node/Talos
+boot-ID witnesses are mandatory. Complete control-plane Node inventory and healthy
+voting etcd views must agree; foreign, unaccounted, duplicate or learner membership
+holds activation. `ActivationReady` is independent of bootstrap readiness.
 
-After reviewing a successful observation, approve its public opaque ID in the
-manifest together with the same inventory revision:
+After activation, requested updates retain frozen owner plans, single-issuance
+runtime journals, observed recovery receipts and UID/RV-safe core cleanup. Accepted
+image state lives in the private activation record, never in a rewritten seed. New
+children follow the same bootstrap/observe/activate path, not a receipt exception.
 
-```yaml
-management:
-  mode: Managed
-  inventoryRevision: import-1
-  machines:
-    - name: existing-control-plane-a
-      uid: exact-existing-machine-uid
-  approval:
-    revision: import-1
-    observationID: exact-observed-opaque-id
-```
+Initial native provisioning remains possible while activation is pending. A Cluster
+whose control plane is already initialized never receives a new Talos Bootstrap RPC,
+even if a reachable replacement node has an empty etcd directory. On genuinely fresh
+Clusters, inspection and Bootstrap share a 30-second deadline.
 
-An unchanged healthy resync preserves the observation ID. Changed inputs or private
-source freshness require a new observation and approval; the public ID is not a
-configuration hash. Preparation freezes only the exact Machine owner-reference
-delta, without activating. No-create UID/resourceVersion CAS writes attach this
-exact TCP controller while preserving other owners. Restart resumes only the
-frozen original-or-desired owners. Completion rechecks every member, source and
-runtime identity before durable activation; partial transfer, stale approval or a
-foreign controller never authorizes lifecycle work. Approved owner association
-does not itself create/delete Machines or call Talos bootstrap/apply/etcd mutation.
-
-Once activated, normal requested updates and provider-created successors use the
-existing lifecycle and accepted-bootstrap lineage; they are not permanently locked
-to the original imported UIDs or baseline. Lifecycle selection always requires the
-exact TCP controller identity, never labels alone. Omitting `management` is only a
-fresh path when no private management record exists and existing Machines have
-provider-created accepted bootstrap intent. Removing public status/declarations
-does not turn an imported seed into fresh provenance.
-
-A deleting activated TCP uses a separate read-only retirement authorization:
-the exact prior authority/activation and imported associations must still match,
-with no active markers, pending hook, Prepared/Released intent, ambiguous operation
-or unconsumed receipt. Expected disappearing/deleting children and workload Nodes
-are handled by native CAPI deletion, not by a new healthy-running observation or
-Talos reset. Native deletion and hook release use Machine UID/resourceVersion
-preconditions; they cannot cross a same-name replacement. Infrastructure readiness
-does not prevent authorized retirement, and no finalizer is added to a deleting TCP.
-Uncached release rereads preserve the observed Machine spec, NodeRef/providerID,
-addresses, deletion transition and pending/update-completion state before CAS;
-unrelated status/metadata churn is not replacement intent. A lost response resumes
-from the actual written snapshot without restoring a hook or changing owners.
-
-The only owner-plan work permitted on a deleting authority is fully witnessed
-`Consumed` cleanup: unchanged frozen owner/spec/UID/output/source identity and the
-matching consumed receipt are revalidated before reference detach and owner Secret
-UID/resourceVersion deletion. A pause anywhere in the pinned inventory stops that
-cleanup. New desired policy never reinterprets the old plan; Prepared/Released or
-ambiguous work remains held. This cleanup grants no new bootstrap/apply/upgrade,
-snapshot or activation permission. Imported seed and credential bytes stay intact.
-
-Local isolated tests use actual Kubernetes API writes, workload TLS and simulated
-strict-mTLS Talos/COSI servers with two and three members. They exercise pauses,
-freshness/stale approval, foreign ownership, partial owner-write response loss,
-restart, aggregate activation and native deleting-object API requests. Separate
-actual API tests cover witnessed Consumed detach/delete response loss while the
-authority is deleting; their executor receipts are fixture-produced. These are not
-live adoption, Flux choreography, physical-node provisioning or reboot/OS-upgrade
-proof. Deployment and handoff still require the independently reviewed inventory
-and controller ownership plan.
+Deleting-owner retirement and fully witnessed Consumed cleanup retain their durable
+idle-operation, pause and exact UID checks. No activation or cleanup path adopts
+hand-installed hosts or fakes CAPH state: existing hosts are replaced via CAPH.
+The operator checks Ceph health before each replacement; no automated Ceph gate is
+added. Provider publication, live rollout and the control-plane handoff remain separate
+reviewed work; isolated API/mTLS/COSI tests do not claim physical-node execution.
 
 ### Observed control-plane update status
 
