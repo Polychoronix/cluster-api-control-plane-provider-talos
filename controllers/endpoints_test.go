@@ -72,7 +72,10 @@ func (*endpointMachineServer) Events(_ *machineapi.EventsRequest, stream machine
 	return stream.Context().Err()
 }
 
-type endpointCall struct{ method, target string }
+type endpointCall struct {
+	method, target string
+	deadline       time.Duration
+}
 
 func TestPerMachineEndpointsActualMTLSAndRouting(t *testing.T) {
 	caPublic, caKey, err := ed25519.GenerateKey(rand.Reader)
@@ -131,8 +134,12 @@ func TestPerMachineEndpointsActualMTLSAndRouting(t *testing.T) {
 			if target := strings.Join(md.Get("node"), ","); target != machine.Name {
 				t.Errorf("endpoint %s received target %q", machine.Name, target)
 			}
+			var remaining time.Duration
+			if deadline, ok := ctx.Deadline(); ok {
+				remaining = time.Until(deadline)
+			}
 			mu.Lock()
-			calls = append(calls, endpointCall{method: method, target: strings.Join(md.Get("node"), ",")})
+			calls = append(calls, endpointCall{method: method, target: strings.Join(md.Get("node"), ","), deadline: remaining})
 			mu.Unlock()
 		}
 		server := grpc.NewServer(grpc.Creds(credentials.NewTLS(tlsConfig)), grpc.UnaryInterceptor(func(ctx context.Context, req any, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (any, error) {
@@ -168,6 +175,10 @@ func TestPerMachineEndpointsActualMTLSAndRouting(t *testing.T) {
 	require.NotEmpty(t, observed)
 	for _, call := range observed {
 		require.Contains(t, []string{"cp-one", "cp-two"}, call.target)
+		if strings.HasSuffix(call.method, "/Bootstrap") {
+			require.Positive(t, call.deadline)
+			require.LessOrEqual(t, call.deadline, 30*time.Second)
+		}
 	}
 	for _, suffix := range []string{"/ServiceList", "/EtcdMemberList", "/Events", "/List", "/Bootstrap", "/EtcdForfeitLeadership", "/EtcdLeaveCluster", "/EtcdRemoveMemberByID"} {
 		found := false
