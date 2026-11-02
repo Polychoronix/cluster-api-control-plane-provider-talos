@@ -5,7 +5,6 @@
 package v1beta1
 
 import (
-	cabptv1 "github.com/siderolabs/cluster-api-bootstrap-provider-talos/api/v1beta1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	clusterv1 "sigs.k8s.io/cluster-api/api/core/v1beta2"
 )
@@ -46,14 +45,8 @@ type TalosControlPlaneTemplateResourceSpec struct {
 	// to use for initializing and joining machines to the control plane.
 	ControlPlaneConfig ControlPlaneConfig `json:"controlPlaneConfig"`
 
-	// MachineConfigOverrides are namespace-local, existing-Machine UID pins.
-	// +listType=map
-	// +listMapKey=name
 	// +optional
-	MachineConfigOverrides []MachineConfigOverride `json:"machineConfigOverrides,omitempty"`
-
-	// +optional
-	Management *cabptv1.ManagementSpec `json:"management,omitempty"`
+	Manage bool `json:"manage,omitempty"`
 
 	// The RolloutStrategy to use to replace control plane machines with
 	// new ones.

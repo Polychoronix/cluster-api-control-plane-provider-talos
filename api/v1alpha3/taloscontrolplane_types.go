@@ -8,7 +8,6 @@ import (
 	cabptv1 "github.com/siderolabs/cluster-api-bootstrap-provider-talos/api/v1alpha3"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
 )
 
@@ -16,26 +15,10 @@ const (
 	TalosControlPlaneFinalizer = "talos.controlplane.cluster.x-k8s.io"
 )
 
-// +kubebuilder:validation:XValidation:rule="!has(self.controlplane.management)",message="control-plane approval belongs to TalosControlPlane.spec.management"
 type ControlPlaneConfig struct {
 	// Deprecated: starting from cacppt v0.4.0 provider doesn't use init configs.
 	InitConfig         cabptv1.TalosConfigSpec `json:"init,omitempty"`
 	ControlPlaneConfig cabptv1.TalosConfigSpec `json:"controlplane"`
-}
-
-// MachineConfigOverride identifies one existing Machine in this namespace.
-// +kubebuilder:validation:XValidation:rule="has(self.config) || has(self.talosEndpoint)",message="config or talosEndpoint is required"
-type MachineConfigOverride struct {
-	// +kubebuilder:validation:MinLength=1
-	// +kubebuilder:validation:MaxLength=253
-	Name string `json:"name"`
-	// +kubebuilder:validation:Type=string
-	// +kubebuilder:validation:MinLength=1
-	UID types.UID `json:"uid"`
-	// +optional
-	Config *cabptv1.MachineConfigOverlay `json:"config,omitempty"`
-	// +optional
-	TalosEndpoint *cabptv1.TalosEndpoint `json:"talosEndpoint,omitempty"`
 }
 
 type KubeconfigMode string
@@ -87,15 +70,9 @@ type TalosControlPlaneSpec struct {
 	// to use for initializing and joining machines to the control plane.
 	ControlPlaneConfig ControlPlaneConfig `json:"controlPlaneConfig"`
 
-	// Overrides are namespace-local and only apply to a matching existing UID.
-	// +listType=map
-	// +listMapKey=name
+	// Manage consents to activation after observing all owned control-plane Machines.
 	// +optional
-	MachineConfigOverrides []MachineConfigOverride `json:"machineConfigOverrides,omitempty"`
-
-	// Management uses the bootstrap provider's common inventory approval contract.
-	// +optional
-	Management *cabptv1.ManagementSpec `json:"management,omitempty"`
+	Manage bool `json:"manage,omitempty"`
 
 	// The RolloutStrategy to use to replace control plane machines with
 	// new ones.
@@ -211,9 +188,6 @@ type TalosControlPlaneStatus struct {
 	// ObservedGeneration is the latest generation observed by the controller.
 	// +optional
 	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
-
-	// +optional
-	Management *cabptv1.ManagementStatus `json:"management,omitempty"`
 
 	// Conditions defines current service state of the KubeadmControlPlane.
 	// +optional

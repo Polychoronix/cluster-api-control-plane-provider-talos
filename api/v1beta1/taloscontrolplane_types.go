@@ -7,7 +7,6 @@ package v1beta1
 import (
 	cabptv1 "github.com/siderolabs/cluster-api-bootstrap-provider-talos/api/v1beta1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	clusterv1 "sigs.k8s.io/cluster-api/api/core/v1beta2"
 )
@@ -21,26 +20,8 @@ const (
 	TalosControlPlaneFinalizerLegacy = "talos.controlplane.cluster.x-k8s.io"
 )
 
-// +kubebuilder:validation:XValidation:rule="!has(self.controlplane.management)",message="control-plane approval belongs to TalosControlPlane.spec.management"
 type ControlPlaneConfig struct {
 	ControlPlaneConfig cabptv1.TalosConfigSpec `json:"controlplane"`
-}
-
-// MachineConfigOverride binds private configuration references and management
-// transport to one existing Machine identity in the control plane namespace.
-// +kubebuilder:validation:XValidation:rule="has(self.config) || has(self.talosEndpoint)",message="config or talosEndpoint is required"
-type MachineConfigOverride struct {
-	// +kubebuilder:validation:MinLength=1
-	// +kubebuilder:validation:MaxLength=253
-	Name string `json:"name"`
-	// +kubebuilder:validation:Type=string
-	// +kubebuilder:validation:MinLength=1
-	UID types.UID `json:"uid"`
-	// Config occupies the per-Machine slot; shared patches remain in the root spec.
-	// +optional
-	Config *cabptv1.MachineConfigOverlay `json:"config,omitempty"`
-	// +optional
-	TalosEndpoint *cabptv1.TalosEndpoint `json:"talosEndpoint,omitempty"`
 }
 
 // KubeconfigMode selects who owns the standard Cluster kubeconfig Secret.
@@ -164,17 +145,9 @@ type TalosControlPlaneSpec struct {
 	// to use for initializing and joining machines to the control plane.
 	ControlPlaneConfig ControlPlaneConfig `json:"controlPlaneConfig"`
 
-	// MachineConfigOverrides apply only to a matching existing Machine name and UID.
-	// Namespace is implicit. New Machines never consume a pinned entry.
-	// +listType=map
-	// +listMapKey=name
+	// Manage consents to activation after observing all owned control-plane Machines.
 	// +optional
-	MachineConfigOverrides []MachineConfigOverride `json:"machineConfigOverrides,omitempty"`
-
-	// Management declares read-only inventory observation and exact manifest approval.
-	// Control-plane children use this single authority, not independent approvals.
-	// +optional
-	Management *cabptv1.ManagementSpec `json:"management,omitempty"`
+	Manage bool `json:"manage,omitempty"`
 
 	// The RolloutStrategy to use to replace control plane machines with
 	// new ones.
@@ -279,10 +252,6 @@ type TalosControlPlaneStatus struct {
 	// ObservedGeneration is the latest generation observed by the controller.
 	// +optional
 	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
-
-	// Management identifies the observed and activated inventory without private data.
-	// +optional
-	Management *cabptv1.ManagementStatus `json:"management,omitempty"`
 
 	// Bootstrapped denotes whether any nodes received bootstrap request
 	// which is required to start etcd and Kubernetes components in Talos.

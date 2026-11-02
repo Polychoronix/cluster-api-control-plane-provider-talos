@@ -286,82 +286,10 @@ spec:
                                     type: array
                                     x-kubernetes-list-type: atomic
                                 type: object
-                              management:
-                                description: Management opts an existing node into
-                                  observation and approved management.
-                                properties:
-                                  approval:
-                                    description: Approval explicitly authorizes the
-                                      observed revision.
-                                    properties:
-                                      observationID:
-                                        maxLength: 253
-                                        minLength: 1
-                                        pattern: ^[a-zA-Z0-9][a-zA-Z0-9._-]*$
-                                        type: string
-                                      revision:
-                                        maxLength: 253
-                                        minLength: 1
-                                        pattern: ^[a-zA-Z0-9][a-zA-Z0-9._-]*$
-                                        type: string
-                                    required:
-                                    - observationID
-                                    - revision
-                                    type: object
-                                  inventoryRevision:
-                                    description: InventoryRevision identifies this
-                                      non-secret inventory.
-                                    maxLength: 253
-                                    minLength: 1
-                                    pattern: ^[a-zA-Z0-9][a-zA-Z0-9._-]*$
-                                    type: string
-                                  machines:
-                                    description: Machines pins names to immutable
-                                      Kubernetes identities.
-                                    items:
-                                      description: MachineIdentityReference identifies
-                                        a namespace-local Machine, not just its name.
-                                      properties:
-                                        name:
-                                          maxLength: 253
-                                          minLength: 1
-                                          pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$
-                                          type: string
-                                        uid:
-                                          description: |-
-                                            UID is a type that holds unique ID values, including UUIDs.  Because we
-                                            don't ONLY use UUIDs, this is an alias to string.  Being a type captures
-                                            intent and helps make sure that UIDs and names do not get conflated.
-                                          maxLength: 253
-                                          minLength: 1
-                                          pattern: ^[a-zA-Z0-9][a-zA-Z0-9._-]*$
-                                          type: string
-                                      required:
-                                      - name
-                                      - uid
-                                      type: object
-                                    maxItems: 1000
-                                    minItems: 1
-                                    type: array
-                                    x-kubernetes-list-map-keys:
-                                    - name
-                                    x-kubernetes-list-type: map
-                                  mode:
-                                    default: Observe
-                                    description: Mode defaults to Observe only when
-                                      management is present.
-                                    enum:
-                                    - Observe
-                                    - Managed
-                                    type: string
-                                required:
-                                - inventoryRevision
-                                - machines
-                                type: object
-                                x-kubernetes-validations:
-                                - message: Managed requires approval matching inventoryRevision
-                                  rule: self.mode != 'Managed' || (has(self.approval)
-                                    && self.approval.revision == self.inventoryRevision)
+                              manage:
+                                description: Manage consents to activation after exact
+                                  live observation; false is read-only.
+                                type: boolean
                               strategicPatchSecretRefs:
                                 description: StrategicPatchSecretRefs are applied
                                   in order after shared public patches.
@@ -437,15 +365,9 @@ spec:
                               rule: '!(has(self.configSecretRef) || (has(self.machineConfig)
                                 && has(self.machineConfig.configSecretRef))) || self.generateType
                                 in [''none'', ''controlplane'', ''worker'']'
-                            - message: TalosConfig requires exactly one Machine identity
-                              rule: '!has(self.management) || size(self.management.machines)
-                                == 1'
                         required:
                         - controlplane
                         type: object
-                        x-kubernetes-validations:
-                        - message: control-plane approval belongs to TalosControlPlane.spec.management
-                          rule: '!has(self.controlplane.management)'
                       kubeconfig:
                         description: Kubeconfig selects management of the standard
                           Cluster kubeconfig Secret.
@@ -459,133 +381,6 @@ spec:
                             - External
                             type: string
                         type: object
-                      machineConfigOverrides:
-                        description: MachineConfigOverrides are namespace-local, existing-Machine
-                          UID pins.
-                        items:
-                          description: |-
-                            MachineConfigOverride binds private configuration references and management
-                            transport to one existing Machine identity in the control plane namespace.
-                          properties:
-                            config:
-                              description: Config occupies the per-Machine slot; shared
-                                patches remain in the root spec.
-                              properties:
-                                configPatches:
-                                  items:
-                                    properties:
-                                      op:
-                                        type: string
-                                      path:
-                                        type: string
-                                      value:
-                                        x-kubernetes-preserve-unknown-fields: true
-                                    required:
-                                    - op
-                                    - path
-                                    type: object
-                                  type: array
-                                  x-kubernetes-list-type: atomic
-                                configRevision:
-                                  description: ConfigRevision is independent of the
-                                    shared revision and contains no private data.
-                                  type: string
-                                configSecretRef:
-                                  description: ConfigSecretRef replaces only the base,
-                                    never shared patches.
-                                  properties:
-                                    key:
-                                      maxLength: 253
-                                      minLength: 1
-                                      pattern: ^[-._a-zA-Z0-9]+$
-                                      type: string
-                                      x-kubernetes-validations:
-                                      - message: must not be '.' or start with '..'
-                                        rule: self != '.' && !self.startsWith('..')
-                                    name:
-                                      maxLength: 253
-                                      minLength: 1
-                                      pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$
-                                      type: string
-                                  required:
-                                  - key
-                                  - name
-                                  type: object
-                                strategicPatchSecretRefs:
-                                  items:
-                                    description: |-
-                                      SecretKeyReference selects required data in a Secret in the TalosConfig's namespace.
-                                      Neither arbitrary namespaces nor templated names or filesystem paths are supported.
-                                    properties:
-                                      key:
-                                        maxLength: 253
-                                        minLength: 1
-                                        pattern: ^[-._a-zA-Z0-9]+$
-                                        type: string
-                                        x-kubernetes-validations:
-                                        - message: must not be '.' or start with '..'
-                                          rule: self != '.' && !self.startsWith('..')
-                                      name:
-                                        maxLength: 253
-                                        minLength: 1
-                                        pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$
-                                        type: string
-                                    required:
-                                    - key
-                                    - name
-                                    type: object
-                                  type: array
-                                  x-kubernetes-list-type: atomic
-                                strategicPatches:
-                                  items:
-                                    type: string
-                                  type: array
-                                  x-kubernetes-list-type: atomic
-                              type: object
-                            name:
-                              maxLength: 253
-                              minLength: 1
-                              type: string
-                            talosEndpoint:
-                              description: TalosEndpoint separates dial transport,
-                                certificate identity and optional target routing.
-                              properties:
-                                address:
-                                  description: Address is an explicit host:port, with
-                                    bracketed IPv6 when applicable.
-                                  minLength: 1
-                                  type: string
-                                node:
-                                  description: Node identifies a single target when
-                                    the endpoint is an aggregated Talos proxy.
-                                  type: string
-                                serverName:
-                                  description: ServerName is the certificate verification/SNI
-                                    name without a port.
-                                  minLength: 1
-                                  type: string
-                              required:
-                              - address
-                              - serverName
-                              type: object
-                            uid:
-                              description: |-
-                                UID is a type that holds unique ID values, including UUIDs.  Because we
-                                don't ONLY use UUIDs, this is an alias to string.  Being a type captures
-                                intent and helps make sure that UIDs and names do not get conflated.
-                              minLength: 1
-                              type: string
-                          required:
-                          - name
-                          - uid
-                          type: object
-                          x-kubernetes-validations:
-                          - message: config or talosEndpoint is required
-                            rule: has(self.config) || has(self.talosEndpoint)
-                        type: array
-                        x-kubernetes-list-map-keys:
-                        - name
-                        x-kubernetes-list-type: map
                       machineNamingStrategy:
                         description: |-
                           MachineNamingStrategy allows changing the naming pattern used when creating control plane Machines.
@@ -675,82 +470,8 @@ spec:
                                 type: object
                             type: object
                         type: object
-                      management:
-                        description: ManagementSpec binds management to an explicit
-                          Machine inventory and observation.
-                        properties:
-                          approval:
-                            description: Approval explicitly authorizes the observed
-                              revision.
-                            properties:
-                              observationID:
-                                maxLength: 253
-                                minLength: 1
-                                pattern: ^[a-zA-Z0-9][a-zA-Z0-9._-]*$
-                                type: string
-                              revision:
-                                maxLength: 253
-                                minLength: 1
-                                pattern: ^[a-zA-Z0-9][a-zA-Z0-9._-]*$
-                                type: string
-                            required:
-                            - observationID
-                            - revision
-                            type: object
-                          inventoryRevision:
-                            description: InventoryRevision identifies this non-secret
-                              inventory.
-                            maxLength: 253
-                            minLength: 1
-                            pattern: ^[a-zA-Z0-9][a-zA-Z0-9._-]*$
-                            type: string
-                          machines:
-                            description: Machines pins names to immutable Kubernetes
-                              identities.
-                            items:
-                              description: MachineIdentityReference identifies a namespace-local
-                                Machine, not just its name.
-                              properties:
-                                name:
-                                  maxLength: 253
-                                  minLength: 1
-                                  pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$
-                                  type: string
-                                uid:
-                                  description: |-
-                                    UID is a type that holds unique ID values, including UUIDs.  Because we
-                                    don't ONLY use UUIDs, this is an alias to string.  Being a type captures
-                                    intent and helps make sure that UIDs and names do not get conflated.
-                                  maxLength: 253
-                                  minLength: 1
-                                  pattern: ^[a-zA-Z0-9][a-zA-Z0-9._-]*$
-                                  type: string
-                              required:
-                              - name
-                              - uid
-                              type: object
-                            maxItems: 1000
-                            minItems: 1
-                            type: array
-                            x-kubernetes-list-map-keys:
-                            - name
-                            x-kubernetes-list-type: map
-                          mode:
-                            default: Observe
-                            description: Mode defaults to Observe only when management
-                              is present.
-                            enum:
-                            - Observe
-                            - Managed
-                            type: string
-                        required:
-                        - inventoryRevision
-                        - machines
-                        type: object
-                        x-kubernetes-validations:
-                        - message: Managed requires approval matching inventoryRevision
-                          rule: self.mode != 'Managed' || (has(self.approval) && self.approval.revision
-                            == self.inventoryRevision)
+                      manage:
+                        type: boolean
                       rolloutStrategy:
                         default:
                           rollingUpdate:

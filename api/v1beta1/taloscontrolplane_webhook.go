@@ -130,9 +130,7 @@ func (r *TalosControlPlane) validate() field.ErrorList {
 	allErrs = append(allErrs, validateMachineNamingStrategy(r.Spec.MachineNamingStrategy, field.NewPath("spec", "machineNamingStrategy"))...)
 	allErrs = append(allErrs, validateRolloutStrategy(r.Spec.RolloutStrategy, field.NewPath("spec", "rolloutStrategy"))...)
 	allErrs = append(allErrs, validateControlPlaneConfig(&r.Spec.ControlPlaneConfig, field.NewPath("spec", "controlPlaneConfig"))...)
-	allErrs = append(allErrs, ValidateMachineConfigOverrides(r.Spec.ControlPlaneConfig.ControlPlaneConfig, r.Spec.MachineConfigOverrides, field.NewPath("spec", "machineConfigOverrides"))...)
 	allErrs = append(allErrs, validateKubeconfig(r.Spec.Kubeconfig, field.NewPath("spec", "kubeconfig"))...)
-	allErrs = append(allErrs, cabptv1.ValidateManagementSpec(field.NewPath("spec", "management"), r.Spec.Management)...)
 
 	return allErrs
 }
@@ -145,8 +143,8 @@ func validateControlPlaneConfig(cfg *ControlPlaneConfig, fldPath *field.Path) fi
 
 	allErrs = append(allErrs, cabptv1.ValidateImageFactory(fldPath.Child("controlplane", "imageFactory"), cfg.ControlPlaneConfig.ImageFactory)...)
 	allErrs = append(allErrs, cabptv1.ValidateConfigInputs(fldPath.Child("controlplane"), cfg.ControlPlaneConfig)...)
-	if cfg.ControlPlaneConfig.Management != nil {
-		allErrs = append(allErrs, field.Forbidden(fldPath.Child("controlplane", "management"), "control-plane approval belongs to TalosControlPlane.spec.management"))
+	if cfg.ControlPlaneConfig.Manage {
+		allErrs = append(allErrs, field.Forbidden(fldPath.Child("controlplane", "manage"), "consent belongs to TalosControlPlane.spec.manage"))
 	}
 
 	return allErrs

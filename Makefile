@@ -16,6 +16,9 @@ KRES_REVISION := 9076602b5cebabca7c82d6ed83c29806b07aa516
 
 CONTROLLER_GEN_VERSION ?= v0.21.0
 CONVERSION_GEN_VERSION ?= v0.36.0
+CONTROLLER_GEN ?= controller-gen
+CONVERSION_GEN ?= conversion-gen
+KUSTOMIZE ?= kustomize
 
 ifneq (, $(filter $(WITH_RACE), t true TRUE y yes 1))
 GO_BUILDFLAGS += -race
@@ -107,6 +110,15 @@ container: generate ## Build the image; only this target writes its buildx image
 .PHONY: manifests
 manifests: ## Generate manifests (e.g. CRD, RBAC, etc.).
 	@$(MAKE) local-$@ DEST=./ PLATFORM=linux/amd64
+
+.PHONY: generate-local manifests-local
+generate-local: ## Generate API code with installed pinned generators.
+	@$(CONTROLLER_GEN) object:headerFile=./hack/boilerplate.go.txt paths="./api/..."
+	@$(CONVERSION_GEN) --output-file=zz_generated.conversion.go --go-header-file=./hack/boilerplate.go.txt ./api/v1alpha3
+
+manifests-local: ## Generate CRD/webhook/RBAC source without a container or cluster.
+	@$(CONTROLLER_GEN) crd:crdVersions=v1 paths="./api/..." output:crd:dir=config/crd/bases output:webhook:dir=config/webhook webhook
+	@$(CONTROLLER_GEN) rbac:roleName=manager-role paths="./controllers/..." output:rbac:dir=config/rbac
 
 .PHONY: release-manifests
 release-manifests: manifests ## Render components/checksums with the explicitly selected image.
