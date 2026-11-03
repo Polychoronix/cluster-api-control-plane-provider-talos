@@ -1,3 +1,9 @@
+## Unreleased — v0.9.0-craci.4
+
+### Changes
+
+* Version-only matched release alongside CABPT `v0.9.0-craci.4` (TalosConfig admission webhook relaxation for input-reference fields). No CACPPT source changes; `go.mod` keeps the published CABPT `v0.9.0-craci.3` module, whose API is unchanged in craci.4, so CI resolves without waiting for the new CABPT tag.
+
 ## Unreleased
 
 ### Changes
