@@ -269,6 +269,12 @@ func (r *TalosControlPlaneReconciler) reconcile(ctx context.Context, cluster *cl
 		return ctrl.Result{}, err
 	}
 	if !conditions.IsTrue(tcp, cabptv1.ActivationReadyCondition) {
+		// A Machine deleted before activation (a node that never registered, an operator
+		// retry) still carries the pre-terminate hook; it must be serviced here or the
+		// deletion parks forever, since nothing below this branch would ever run for it.
+		if _, hookErr := r.reconcileMachinePreTerminateHooks(ctx, cluster, tcp, &ownedMachines); hookErr != nil {
+			logger.Error(hookErr, "failed to reconcile machine pre-terminate hooks")
+		}
 		// Native template ownership is required even before node activation.
 		if err := r.reconcileExternalReference(ctx, tcp.Spec.MachineTemplate.Spec.InfrastructureRef, cluster); err != nil {
 			return ctrl.Result{}, err

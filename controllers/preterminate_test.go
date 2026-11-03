@@ -23,6 +23,7 @@ import (
 	"k8s.io/client-go/tools/events"
 	"k8s.io/utils/ptr"
 	clusterv1 "sigs.k8s.io/cluster-api/api/core/v1beta2"
+	"sigs.k8s.io/cluster-api/util/conditions"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
@@ -940,4 +941,159 @@ func TestPreTerminateHook_CountsADeletingPeerWithRunningEtcd(t *testing.T) {
 
 	assert.False(t, f.hasHook(t, "cp-1"), "cp-2 and cp-3 both still vote, so cp-1 may leave")
 	assert.True(t, f.hasHook(t, "cp-3"), "one membership change at a time")
+}
+
+// --- never-joined machines and unreachable peers ---------------------------
+
+// ptNeverRegistered models a Machine whose node never came up: no NodeRef, a bootstrap
+// reference to the given TalosConfig.
+func ptNeverRegistered(configName string) func(*clusterv1.Machine) {
+	return func(m *clusterv1.Machine) {
+		m.Status.NodeRef = clusterv1.MachineNodeReference{}
+		m.Spec.Bootstrap.ConfigRef = clusterv1.ContractVersionedObjectReference{
+			APIGroup: cabptv1.GroupVersion.Group,
+			Kind:     "TalosConfig",
+			Name:     configName,
+		}
+	}
+}
+
+func newPTTalosConfig(name string, activated bool) *cabptv1.TalosConfig {
+	config := &cabptv1.TalosConfig{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "default", UID: types.UID(name + "-uid")}}
+
+	if activated {
+		config.Status.Conditions = []metav1.Condition{{Type: cabptv1.ActivationReadyCondition, Status: metav1.ConditionTrue, Reason: "FixtureActivated", LastTransitionTime: metav1.Now()}}
+	}
+
+	return config
+}
+
+// A Machine whose node never registered and whose TalosConfig was never activated has no
+// etcd membership to resolve: the hook is released at once, without touching any peer.
+func TestPreTerminateHook_ReleasesWhenTheMachineNeverJoined(t *testing.T) {
+	tcp := newPreTerminateTCP()
+	victim := newPTMachine(tcp, "cp-1", ptHooked, ptNeverRegistered("cp-1-config"),
+		ptDeleting(time.Now(), clusterv1.MachineDeletingWaitingForPreTerminateHookReason))
+	peer := newPTMachine(tcp, "cp-2", ptHooked)
+
+	f := newPreTerminateFixture(t, victim, peer)
+	require.NoError(t, f.r.Client.Create(context.Background(), newPTTalosConfig("cp-1-config", false)))
+	f.dialer.dialErrs["cp-2"] = fmt.Errorf("connection refused")
+	f.dialer.dialErrs["cp-1"] = fmt.Errorf("connection refused")
+
+	_, err := f.run(context.Background())
+	require.NoError(t, err)
+
+	assert.False(t, f.hasHook(t, "cp-1"))
+	assert.Empty(t, f.dialer.dialed, "nothing is dialed for a machine that never joined")
+	assert.Nil(t, conditions.Get(f.tcp, controlplanev1.MachineDeletionBlockedCondition))
+
+	events := strings.Join(f.events(), "\n")
+	assert.Contains(t, events, "EtcdCleanupSkipped")
+	assert.Contains(t, events, "never joined the control plane")
+}
+
+// The same Machine with an activated TalosConfig did join: it takes the regular path.
+func TestPreTerminateHook_ActivatedConfigCountsAsJoined(t *testing.T) {
+	tcp := newPreTerminateTCP()
+	victim := newPTMachine(tcp, "cp-1", ptHooked, ptNeverRegistered("cp-1-config"),
+		ptDeleting(time.Now(), clusterv1.MachineDeletingWaitingForPreTerminateHookReason))
+	peer := newPTMachine(tcp, "cp-2", ptHooked)
+
+	f := newPreTerminateFixture(t, victim, peer)
+	require.NoError(t, f.r.Client.Create(context.Background(), newPTTalosConfig("cp-1-config", true)))
+	f.dialer.clients["cp-2"] = &fakeEtcdCalls{
+		name:    "cp-2",
+		members: []*machineapi.EtcdMember{{Id: 2, Hostname: "cp-2"}},
+	}
+
+	_, err := f.run(context.Background())
+	require.Error(t, err, "without a hostname the member cannot be matched, so the regular path retries")
+
+	assert.True(t, f.hasHook(t, "cp-1"))
+	assert.Contains(t, f.dialer.dialed, "cp-2", "membership is verified through the peer")
+}
+
+// A Machine that joined etcd but has no reachable peer is held, not released: releasing would
+// leave a stale voter. The hold ignores the fail-open deadline and tells the operator what to do.
+func TestPreTerminateHook_HoldsWithoutAReachablePeer(t *testing.T) {
+	tcp := newPreTerminateTCP()
+	victim := newPTMachine(tcp, "cp-1", ptHooked,
+		ptDeleting(time.Now(), clusterv1.MachineDeletingWaitingForPreTerminateHookReason),
+		ptObservedAt(time.Now().Add(-time.Hour)),
+	)
+	peer := newPTMachine(tcp, "cp-2", ptHooked)
+
+	f := newPreTerminateFixture(t, victim, peer)
+	f.dialer.dialErrs["cp-2"] = fmt.Errorf("connection refused")
+
+	res, err := f.run(context.Background())
+	require.NoError(t, err)
+	assert.Positive(t, res.RequeueAfter)
+
+	assert.True(t, f.hasHook(t, "cp-1"), "no peer can confirm the member, so the hook stays")
+	assert.Empty(t, f.get(t, "cp-1").Annotations[etcdCleanupObservedAtAnnotation], "the fail-open clock does not run while holding")
+
+	blocked := conditions.Get(f.tcp, controlplanev1.MachineDeletionBlockedCondition)
+	require.NotNil(t, blocked)
+	assert.Equal(t, metav1.ConditionTrue, blocked.Status)
+	assert.Equal(t, controlplanev1.EtcdPeerUnreachableReason, blocked.Reason)
+	assert.Contains(t, blocked.Message, "needs a reachable peer")
+	assert.Contains(t, blocked.Message, PreTerminateHookCleanupAnnotation)
+
+	events := strings.Join(f.events(), "\n")
+	assert.Contains(t, events, "EtcdPeerUnreachable")
+	assert.Contains(t, events, "Warning")
+
+	// Repeating the hold with the same cause does not spam events.
+	_, err = f.run(context.Background())
+	require.NoError(t, err)
+	assert.Empty(t, f.events())
+}
+
+// Once a peer is back the hold clears and the regular path removes the member.
+func TestPreTerminateHook_PeerHoldClearsWhenThePeerReturns(t *testing.T) {
+	tcp := newPreTerminateTCP()
+	victim := newPTMachine(tcp, "cp-1", ptHooked, ptDeleting(time.Now(), clusterv1.MachineDeletingWaitingForPreTerminateHookReason))
+	peer := newPTMachine(tcp, "cp-2", ptHooked)
+
+	f := newPreTerminateFixture(t, victim, peer)
+	f.dialer.dialErrs["cp-2"] = fmt.Errorf("connection refused")
+
+	_, err := f.run(context.Background())
+	require.NoError(t, err)
+	require.NotNil(t, conditions.Get(f.tcp, controlplanev1.MachineDeletionBlockedCondition))
+
+	delete(f.dialer.dialErrs, "cp-2")
+	f.dialer.clients["cp-2"] = &fakeEtcdCalls{
+		name:     "cp-2",
+		members:  []*machineapi.EtcdMember{{Id: 1, Hostname: "cp-1"}, {Id: 2, Hostname: "cp-2"}},
+		services: runningEtcd(),
+	}
+	f.dialer.clients["cp-1"] = &fakeEtcdCalls{name: "cp-1", services: runningEtcd()}
+
+	_, err = f.run(context.Background())
+	require.NoError(t, err)
+
+	assert.False(t, f.hasHook(t, "cp-1"))
+	assert.Nil(t, conditions.Get(f.tcp, controlplanev1.MachineDeletionBlockedCondition))
+}
+
+// A control plane that never activated still services deletions: a replacement that died on
+// arrival must not park forever behind the activation gate.
+func TestReconcile_ServicesHooksBeforeActivation(t *testing.T) {
+	tcp := newPreTerminateTCP()
+	tcp.Status.Conditions = nil
+
+	victim := newPTMachine(tcp, "cp-1", ptHooked, ptNeverRegistered("cp-1-config"),
+		ptDeleting(time.Now(), clusterv1.MachineDeletingWaitingForPreTerminateHookReason))
+
+	f := newPreTerminateFixtureWithTCP(t, tcp, victim)
+	require.NoError(t, f.r.Client.Create(context.Background(), newPTTalosConfig("cp-1-config", false)))
+	require.False(t, conditions.IsTrue(f.tcp, cabptv1.ActivationReadyCondition))
+
+	_, err := f.r.reconcile(context.Background(), f.cluster, f.tcp)
+	require.NoError(t, err)
+
+	assert.False(t, f.hasHook(t, "cp-1"), "the deletion is serviced before the activation gate")
 }

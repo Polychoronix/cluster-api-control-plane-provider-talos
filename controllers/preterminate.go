@@ -25,6 +25,8 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
+	bootstrapv1 "github.com/siderolabs/cluster-api-bootstrap-provider-talos/api/v1beta1"
+	op "github.com/siderolabs/cluster-api-bootstrap-provider-talos/pkg/updateoperation"
 	controlplanev1 "github.com/siderolabs/cluster-api-control-plane-provider-talos/api/v1beta1"
 )
 
@@ -66,6 +68,7 @@ const (
 	etcdCleanupSkippedEvent       = "EtcdCleanupSkipped"
 	etcdCleanupOrphanedEvent      = "EtcdCleanupOrphaned"
 	etcdQuorumAtRiskEvent         = "EtcdQuorumAtRisk"
+	etcdPeerUnreachableEvent      = "EtcdPeerUnreachable"
 )
 
 // etcdCleanupTimeout is the fail-open deadline for the pre-terminate handler.
@@ -136,6 +139,8 @@ func (r *TalosControlPlaneReconciler) servicePreTerminateHooks(
 	}
 
 	if len(deleting) == 0 {
+		conditions.Delete(tcp, controlplanev1.MachineDeletionBlockedCondition)
+
 		return ctrl.Result{}, nil
 	}
 
@@ -207,6 +212,17 @@ func (r *TalosControlPlaneReconciler) reconcilePreTerminateHookForMachine(
 			"control plane is being deleted, skipping etcd member removal")
 	}
 
+	// A Machine whose node never registered and that CABPT never observed or activated has
+	// no etcd membership to resolve: the install failed or never completed, so there is
+	// nothing to leave and no peer is needed. Releasing at once keeps a dead-on-arrival
+	// replacement from parking its own deletion behind an unreachable Talos endpoint.
+	if why, neverJoined := r.machineNeverJoined(ctx, victim); neverJoined {
+		conditions.Delete(tcp, controlplanev1.MachineDeletionBlockedCondition)
+
+		return r.releasePreTerminateHookWithEvent(ctx, victim, corev1.EventTypeNormal, etcdCleanupSkippedEvent,
+			fmt.Sprintf("machine never joined the control plane (%s), skipping etcd member removal", why))
+	}
+
 	// Removing the last control plane machine leaves no peer to verify against or to remove the
 	// member through, and etcd is about to disappear with it. Same check as KCP's
 	// `controlPlane.Machines.Len() <= 1`, counting deleting machines.
@@ -215,16 +231,20 @@ func (r *TalosControlPlaneReconciler) reconcilePreTerminateHookForMachine(
 			"last control plane machine, skipping etcd member removal")
 	}
 
+	// A node that did join etcd may only leave through a peer that can confirm it. Without one
+	// the member's fate is unknown, and releasing anyway would leave a stale voter behind, so
+	// this never fails open: the operator removes the member and drops the hook annotation.
 	peer := selectEtcdPeer(owned, victim)
 	if peer == nil {
-		return r.failOpenOrRetry(ctx, victim,
-			errors.Errorf("no healthy control plane machine is available to verify etcd membership"))
+		return r.holdForPeer(ctx, tcp, victim, errors.New("no owned control plane machine is available as an etcd peer"))
 	}
 
 	peerClient, peerCtx, err := r.etcdClientFor(ctx, tcp, *peer)
 	if err != nil {
-		return r.failOpenOrRetry(ctx, victim, errors.Wrapf(err, "failed to connect to control plane machine %q", peer.Name))
+		return r.holdForPeer(ctx, tcp, victim, errors.Wrapf(err, "etcd peer %q is unreachable", peer.Name))
 	}
+
+	conditions.Delete(tcp, controlplanev1.MachineDeletionBlockedCondition)
 
 	defer peerClient.Close() //nolint:errcheck
 
@@ -601,6 +621,69 @@ func (r *TalosControlPlaneReconciler) holdForQuorum(ctx context.Context, victim 
 	r.recordMachineEvent(victim, corev1.EventTypeWarning, etcdQuorumAtRiskEvent, message)
 
 	return ctrl.Result{RequeueAfter: preTerminateRequeueAfter}, nil
+}
+
+// holdForPeer keeps the hook on a Machine that joined etcd but has no reachable peer to
+// verify or remove its membership through. Unlike the connectivity failures inside the
+// removal itself this never fails open: a release here would leave a stale etcd voter, which
+// is exactly the state the hook exists to prevent. The TalosControlPlane condition and the
+// Machine event tell the operator what to do; the log line is emitted once per cause.
+func (r *TalosControlPlaneReconciler) holdForPeer(ctx context.Context, tcp *controlplanev1.TalosControlPlane, victim *clusterv1.Machine, cause error) (ctrl.Result, error) {
+	if err := r.clearEtcdCleanupObservedAt(ctx, victim); err != nil {
+		return ctrl.Result{}, err
+	}
+
+	message := fmt.Sprintf("etcd member removal for machine %q needs a reachable peer among the control plane machines; "+
+		"remove the member manually and drop the %s annotation from the Machine: %v",
+		victim.Name, PreTerminateHookCleanupAnnotation, cause)
+
+	if existing := conditions.Get(tcp, controlplanev1.MachineDeletionBlockedCondition); existing == nil || existing.Message != message {
+		r.Log.Info(message, "machine", victim.Name)
+		r.recordMachineEvent(victim, corev1.EventTypeWarning, etcdPeerUnreachableEvent, message)
+	}
+
+	conditions.Set(tcp, metav1.Condition{
+		Type:    controlplanev1.MachineDeletionBlockedCondition,
+		Status:  metav1.ConditionTrue,
+		Reason:  controlplanev1.EtcdPeerUnreachableReason,
+		Message: message,
+	})
+
+	return ctrl.Result{RequeueAfter: preTerminateRequeueAfter}, nil
+}
+
+// machineNeverJoined reports whether a deleting Machine demonstrably never became part of the
+// control plane: its node never registered, and its TalosConfig was never activated by CABPT
+// nor ever carried an update journal. Such a Machine has no etcd membership to resolve. Any
+// evidence to the contrary, including a lookup that cannot be completed, counts as joined.
+func (r *TalosControlPlaneReconciler) machineNeverJoined(ctx context.Context, machine *clusterv1.Machine) (string, bool) {
+	if machine.Status.NodeRef.IsDefined() || r.APIReader == nil {
+		return "", false
+	}
+
+	ref := machine.Spec.Bootstrap.ConfigRef
+	if !ref.IsDefined() || ref.Kind != "TalosConfig" {
+		return "", false
+	}
+
+	config := &bootstrapv1.TalosConfig{}
+	if err := r.APIReader.Get(ctx, client.ObjectKey{Namespace: machine.Namespace, Name: ref.Name}, config); err != nil {
+		if apierrors.IsNotFound(err) {
+			return "no node and no TalosConfig", true
+		}
+
+		return "", false
+	}
+
+	if conditions.IsTrue(config, bootstrapv1.ActivationReadyCondition) {
+		return "", false
+	}
+
+	if _, _, err := op.ReadJournal(ctx, r.APIReader, config.Namespace, ownerIdentity(bootstrapv1.GroupVersion.Group, "TalosConfig", config)); !errors.Is(err, op.ErrNotFound) {
+		return "", false
+	}
+
+	return "no node, TalosConfig never activated, no update journal", true
 }
 
 // clearEtcdCleanupObservedAt drops the fail-open anchor, if present.
