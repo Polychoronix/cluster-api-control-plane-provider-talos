@@ -1,7 +1,8 @@
-## Unreleased — v0.9.0-craci.4
+## Unreleased — v0.9.0-craci.5
 
 ### Changes
 
+* TalosControlPlane `ActivationReady=False` carries the CABPT observation stage name as its message and logs `Talos observation not complete` (keys `taloscontrolplane`, `reason`, `stage`) once per distinct failure. Reason classification (`BaselineMismatch`) follows once `go.mod` selects CABPT `v0.9.0-craci.5`, which exposes the typed stage error.
 * Version-only matched release alongside CABPT `v0.9.0-craci.4` (TalosConfig admission webhook relaxation for input-reference fields). No CACPPT source changes; `go.mod` keeps the published CABPT `v0.9.0-craci.3` module, whose API is unchanged in craci.4, so CI resolves without waiting for the new CABPT tag.
 
 ## Unreleased

@@ -87,7 +87,7 @@ func (r *TalosControlPlaneReconciler) reconcileManagement(ctx context.Context, t
 	}
 	observation, err := op.ObserveManagement(ctx, r.APIReader, request)
 	if err != nil {
-		return false, ctrl.Result{RequeueAfter: requeueDuration}, r.setActivationStatus(ctx, tcp, false, "ObservationPending")
+		return false, ctrl.Result{RequeueAfter: requeueDuration}, r.setActivationFailure(ctx, tcp, "ObservationPending", err)
 	}
 	if _, err = op.RecordManagementObservation(ctx, r.Client, r.APIReader, observation); err != nil {
 		return true, ctrl.Result{RequeueAfter: requeueDuration}, err
@@ -110,6 +110,25 @@ func (r *TalosControlPlaneReconciler) setActivationStatus(ctx context.Context, t
 		status = metav1.ConditionTrue
 	}
 	conditions.Set(tcp, metav1.Condition{Type: bootstrapv1.ActivationReadyCondition, Status: status, Reason: reason, ObservedGeneration: tcp.Generation})
+	return helper.Patch(ctx, tcp, patch.WithStatusObservedGeneration{}, patch.WithOwnedConditions{Conditions: []string{bootstrapv1.ActivationReadyCondition}})
+}
+
+// setActivationFailure publishes why an observation did not complete. CABPT stage errors
+// carry only fixed stage names, never private input, configuration bytes or transport
+// detail. The log line is emitted once per distinct message so the requeue loop stays quiet.
+func (r *TalosControlPlaneReconciler) setActivationFailure(ctx context.Context, tcp *controlplanev1.TalosControlPlane, reason string, cause error) error {
+	message := cause.Error()
+	if len(message) > 256 {
+		message = message[:256]
+	}
+	if previous := conditions.Get(tcp, bootstrapv1.ActivationReadyCondition); previous == nil || previous.Message != message || previous.Reason != reason {
+		r.Log.Info("Talos observation not complete", "taloscontrolplane", client.ObjectKeyFromObject(tcp).String(), "reason", reason, "stage", message)
+	}
+	helper, err := patch.NewHelper(tcp, r.Client)
+	if err != nil {
+		return err
+	}
+	conditions.Set(tcp, metav1.Condition{Type: bootstrapv1.ActivationReadyCondition, Status: metav1.ConditionFalse, Reason: reason, Message: message, ObservedGeneration: tcp.Generation})
 	return helper.Patch(ctx, tcp, patch.WithStatusObservedGeneration{}, patch.WithOwnedConditions{Conditions: []string{bootstrapv1.ActivationReadyCondition}})
 }
 func (r *TalosControlPlaneReconciler) patchManagementPaused(ctx context.Context, tcp *controlplanev1.TalosControlPlane) error {
