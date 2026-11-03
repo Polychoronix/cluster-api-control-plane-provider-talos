@@ -2,6 +2,7 @@
 
 ### Changes
 
+* Host-pinned control-plane members: `spec.controlPlaneConfig.members` (v1beta1) declares each replica with a DNS-label name, an `infrastructureSelector` merged into the cloned InfrastructureMachine `spec.hostSelector.matchLabels`, and a `talosConfigPatch` overlay (configPatches/strategicPatches/strategicPatchSecretRefs appended, talosEndpoint replaced) resolved through `EffectiveTalosConfigSpec` for every child. Machines are created per member in declared order, named after the member and labelled `controlplane.cluster.x-k8s.io/member`; a deleting Machine keeps its member until gone; scale-down walks members in reverse declared order unless a Machine is marked for deletion. Admission: unique member names, immutable names, `replicas <= len(members)` (stepping 1 -> 2 -> 3 allowed). v1alpha3 round-trips members through the hub stash. Without members behaviour is unchanged.
 * TalosControlPlane `ActivationReady=False` carries the CABPT observation stage name as its message and logs `Talos observation not complete` (keys `taloscontrolplane`, `reason`, `stage`) once per distinct failure. Reason classification (`BaselineMismatch`) follows once `go.mod` selects CABPT `v0.9.0-craci.5`, which exposes the typed stage error.
 * Version-only matched release alongside CABPT `v0.9.0-craci.4` (TalosConfig admission webhook relaxation for input-reference fields). No CACPPT source changes; `go.mod` keeps the published CABPT `v0.9.0-craci.3` module, whose API is unchanged in craci.4, so CI resolves without waiting for the new CABPT tag.
 

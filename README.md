@@ -257,6 +257,39 @@ Custom templates must include `{{ .random }}` and can use:
 - `.talosControlPlane.name`
 - `.random`
 
+#### Host-pinned members
+
+On bare metal every control-plane node carries its own inputs (NIC alias, provider ID,
+hostname, Talos management endpoint, private patch Secrets), so one cloned spec per Machine
+is not enough. `spec.controlPlaneConfig.members` (v1beta1 only) declares the replicas
+explicitly:
+
+```yaml
+spec:
+  replicas: 1 # may be lower than the member count; step it up one host at a time
+  controlPlaneConfig:
+    controlplane: { ... } # shared base
+    members:
+      - name: leijonanpentu
+        infrastructureSelector:
+          caph.craci.dev/node: leijonanpentu
+        talosConfigPatch:
+          strategicPatches: [ ... ] # appended after the shared ones
+          strategicPatchSecretRefs:
+            - { name: leijonanpentu-tailscale-patch, key: patch }
+          talosEndpoint: { address: leijonanpentu-talos-access:50000, serverName: leijonanpentu.example }
+```
+
+Machines are created in declared order for the first member without a live Machine, named
+after the member, labelled `controlplane.cluster.x-k8s.io/member=<name>`, and their cloned
+infrastructure machine gets `infrastructureSelector` merged over
+`spec.hostSelector.matchLabels`. A deleting Machine keeps its member until it is gone, so a
+replacement reuses the name on the same host. Scale-down removes members in reverse declared
+order unless a Machine carries `cluster.x-k8s.io/delete-machine`. Member names are immutable
+(remove the Machine first); overlays and selectors follow the bootstrap provider's
+TalosConfig mutability rules. `replicas` cannot exceed the member count.
+`machineNamingStrategy` is ignored while members are declared.
+
 `strategicPatches` is an array of strings.
 Each patch must be passed as a YAML string, typically via a block scalar (`- |`), not as an inline object.
 
