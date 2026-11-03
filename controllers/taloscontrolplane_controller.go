@@ -511,19 +511,51 @@ func (r *TalosControlPlaneReconciler) bootControlPlane(ctx context.Context, clus
 		UID:        tcp.UID,
 	}
 
-	machineName, err := tcp.Spec.GenerateMachineName(cluster.Name, tcp.Name)
-	if err != nil {
-		conditions.Set(tcp, metav1.Condition{
-			Type:    string(controlplanev1.MachinesCreatedCondition),
-			Status:  metav1.ConditionFalse,
-			Reason:  controlplanev1.MachineGenerationFailedReason,
-			Message: fmt.Sprintf("Failed to generate machine name: %v", err),
-		})
+	// Declared members pin Machines to hosts: the next free member names the Machine, labels
+	// it and selects its host. Without members the naming strategy generates the name.
+	var member *controlplanev1.ControlPlaneMember
+	if len(tcp.Spec.ControlPlaneConfig.Members) > 0 {
+		owned, err := r.getControlPlaneMachinesForTCP(ctx, client.ObjectKeyFromObject(cluster), tcp)
+		if err != nil {
+			return ctrl.Result{}, err
+		}
+		member, err = nextFreeMember(tcp, owned.Items)
+		if err != nil {
+			conditions.Set(tcp, metav1.Condition{
+				Type:    string(controlplanev1.MachinesCreatedCondition),
+				Status:  metav1.ConditionFalse,
+				Reason:  controlplanev1.MachineGenerationFailedReason,
+				Message: err.Error(),
+			})
 
-		return ctrl.Result{}, err
+			return ctrl.Result{RequeueAfter: 20 * time.Second}, nil
+		}
 	}
 
-	bootstrapConfig, err := tcp.Spec.EffectiveTalosConfigSpec(&clusterv1.Machine{ObjectMeta: metav1.ObjectMeta{Name: machineName, Namespace: tcp.Namespace}})
+	var machineName string
+	if member != nil {
+		machineName = member.Name
+	} else {
+		generated, err := tcp.Spec.GenerateMachineName(cluster.Name, tcp.Name)
+		if err != nil {
+			conditions.Set(tcp, metav1.Condition{
+				Type:    string(controlplanev1.MachinesCreatedCondition),
+				Status:  metav1.ConditionFalse,
+				Reason:  controlplanev1.MachineGenerationFailedReason,
+				Message: fmt.Sprintf("Failed to generate machine name: %v", err),
+			})
+
+			return ctrl.Result{}, err
+		}
+		machineName = generated
+	}
+
+	machineLabels := controlPlaneMachineLabelsForCluster(tcp, cluster.Name)
+	if member != nil {
+		machineLabels[controlplanev1.MemberLabel] = member.Name
+	}
+
+	bootstrapConfig, err := tcp.Spec.EffectiveTalosConfigSpec(&clusterv1.Machine{ObjectMeta: metav1.ObjectMeta{Name: machineName, Namespace: tcp.Namespace, Labels: machineLabels}})
 	if err != nil {
 		return ctrl.Result{}, err
 	}
@@ -555,17 +587,25 @@ func (r *TalosControlPlaneReconciler) bootControlPlane(ctx context.Context, clus
 		Name:       templateObj.GetName(),
 		Namespace:  templateObj.GetNamespace(),
 	}
-	_, infraRef, err := external.CreateFromTemplate(ctx, &external.CreateFromTemplateInput{
-		Client:      r.Client,
+	infraLabels := map[string]string{clusterv1.MachineControlPlaneLabel: ""}
+	if member != nil {
+		infraLabels[controlplanev1.MemberLabel] = member.Name
+	}
+	infraObj, err := external.GenerateTemplate(&external.GenerateTemplateInput{
+		Template:    templateObj,
 		TemplateRef: &templateRef,
 		Namespace:   tcp.Namespace,
 		Name:        machineName,
 		OwnerRef:    infraCloneOwner,
 		ClusterName: cluster.Name,
-		Labels: map[string]string{
-			clusterv1.MachineControlPlaneLabel: "",
-		},
+		Labels:      infraLabels,
 	})
+	if err == nil {
+		err = applyMemberHostSelector(infraObj, member)
+	}
+	if err == nil {
+		err = r.Client.Create(ctx, infraObj)
+	}
 	if err != nil {
 		conditions.Set(tcp, metav1.Condition{
 			Type:    string(controlplanev1.MachinesCreatedCondition),
@@ -575,6 +615,11 @@ func (r *TalosControlPlaneReconciler) bootControlPlane(ctx context.Context, clus
 		})
 
 		return ctrl.Result{}, err
+	}
+	infraRef := clusterv1.ContractVersionedObjectReference{
+		APIGroup: infraObj.GroupVersionKind().Group,
+		Kind:     infraObj.GetKind(),
+		Name:     infraObj.GetName(),
 	}
 
 	// Clone the bootstrap configuration
@@ -594,7 +639,7 @@ func (r *TalosControlPlaneReconciler) bootControlPlane(ctx context.Context, clus
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      machineName,
 			Namespace: tcp.Namespace,
-			Labels:    controlPlaneMachineLabelsForCluster(tcp, cluster.Name),
+			Labels:    machineLabels,
 			// Carries the pre-terminate etcd cleanup hook, so the Machine is protected from
 			// the moment it exists rather than from the next reconcile.
 			Annotations: r.desiredMachineAnnotations(tcp),

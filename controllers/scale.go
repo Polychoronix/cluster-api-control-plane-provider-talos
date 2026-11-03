@@ -116,13 +116,21 @@ func (r *TalosControlPlaneReconciler) deleteControlPlaneMachine(ctx context.Cont
 
 func selectMachineForScaleDown(controlPlane *ControlPlane, outdatedMachines collections.Machines) (*clusterv1.Machine, error) {
 	machines := controlPlane.Machines
+	explicit := false
 	switch {
 	case controlPlane.MachineWithDeleteAnnotation(outdatedMachines).Len() > 0:
-		machines = controlPlane.MachineWithDeleteAnnotation(outdatedMachines)
+		machines, explicit = controlPlane.MachineWithDeleteAnnotation(outdatedMachines), true
 	case controlPlane.MachineWithDeleteAnnotation(machines).Len() > 0:
-		machines = controlPlane.MachineWithDeleteAnnotation(machines)
+		machines, explicit = controlPlane.MachineWithDeleteAnnotation(machines), true
 	case outdatedMachines.Len() > 0:
 		machines = outdatedMachines
+	}
+
+	// Declared members leave in reverse declared order unless the operator marked a Machine.
+	if !explicit && len(controlPlane.TCP.Spec.ControlPlaneConfig.Members) > 0 {
+		if victim := selectMemberForScaleDown(controlPlane.TCP, machines); victim != nil {
+			return victim, nil
+		}
 	}
 
 	return machines.Oldest(), nil
