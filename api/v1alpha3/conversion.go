@@ -75,6 +75,8 @@ func (src *TalosControlPlane) ConvertTo(dstRaw conversion.Hub) error {
 		// The bootstrap provider's v1alpha3 spec has no imageFactory, so the embedded block
 		// only survives a round trip through the stash.
 		dst.Spec.ControlPlaneConfig.ControlPlaneConfig.ImageFactory = restored.Spec.ControlPlaneConfig.ControlPlaneConfig.ImageFactory
+		// Host-pinned members are hub-only; v1alpha3 clients cannot express them.
+		dst.Spec.ControlPlaneConfig.Members = restored.Spec.ControlPlaneConfig.Members
 		dst.Spec.MachineTemplate.ObjectMeta = restored.Spec.MachineTemplate.ObjectMeta
 		dst.Spec.MachineTemplate.Spec.ReadinessGates = restored.Spec.MachineTemplate.Spec.ReadinessGates
 		dst.Spec.MachineTemplate.Spec.Deletion = restored.Spec.MachineTemplate.Spec.Deletion
@@ -266,4 +268,10 @@ func convertToObjectReference(ref *clusterv1.ContractVersionedObjectReference, n
 // no longer has; the provider has bootstrapped through the Cluster API Bootstrap call since v0.4.0.
 func Convert_v1alpha3_ControlPlaneConfig_To_v1beta1_ControlPlaneConfig(in *ControlPlaneConfig, out *cpv1beta1.ControlPlaneConfig, s apimachineryconversion.Scope) error {
 	return Convert_v1alpha3_TalosConfigSpec_To_v1beta1_TalosConfigSpec(&in.ControlPlaneConfig, &out.ControlPlaneConfig, s)
+}
+
+// Convert_v1beta1_ControlPlaneConfig_To_v1alpha3_ControlPlaneConfig drops `members`, which only
+// the hub has; ConvertTo restores them from the preserved hub data.
+func Convert_v1beta1_ControlPlaneConfig_To_v1alpha3_ControlPlaneConfig(in *cpv1beta1.ControlPlaneConfig, out *ControlPlaneConfig, s apimachineryconversion.Scope) error {
+	return Convert_v1beta1_TalosConfigSpec_To_v1alpha3_TalosConfigSpec(&in.ControlPlaneConfig, &out.ControlPlaneConfig, s)
 }

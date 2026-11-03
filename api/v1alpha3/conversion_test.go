@@ -208,3 +208,35 @@ func TestBooleanConsentRoundTripAndDeepCopy(t *testing.T) {
 	copy.Spec.Manage = false
 	require.True(t, hub.Spec.Manage)
 }
+
+// Members are hub-only; a round trip through v1alpha3 must carry them in the stash.
+func TestTalosControlPlaneRoundTripPreservesMembers(t *testing.T) {
+	t.Parallel()
+
+	hub := &cpv1beta1.TalosControlPlane{
+		ObjectMeta: metav1.ObjectMeta{Name: "cp", Namespace: "default"},
+		Spec: cpv1beta1.TalosControlPlaneSpec{
+			Version: "v1.35.0",
+			ControlPlaneConfig: cpv1beta1.ControlPlaneConfig{
+				ControlPlaneConfig: cabptv1beta1.TalosConfigSpec{GenerateType: "controlplane", TalosVersion: "v1.14"},
+				Members: []cpv1beta1.ControlPlaneMember{{
+					Name:                   "leijonanpentu",
+					InfrastructureSelector: map[string]string{"caph.craci.dev/node": "leijonanpentu"},
+					TalosConfigPatch: &cpv1beta1.ControlPlaneMemberPatch{
+						StrategicPatches:         []string{"{}"},
+						StrategicPatchSecretRefs: []cabptv1beta1.SecretKeyReference{{Name: "leijonanpentu-tailscale", Key: "patch"}},
+						TalosEndpoint:            &cabptv1beta1.TalosEndpoint{Address: "leijonanpentu-talos-access:50000", ServerName: "leijonanpentu.example"},
+					},
+				}},
+			},
+		},
+	}
+
+	spoke := &TalosControlPlane{}
+	require.NoError(t, spoke.ConvertFrom(hub))
+	require.Contains(t, spoke.Annotations, utilconversion.DataAnnotation)
+
+	restored := &cpv1beta1.TalosControlPlane{}
+	require.NoError(t, spoke.ConvertTo(restored))
+	require.Equal(t, hub.Spec.ControlPlaneConfig.Members, restored.Spec.ControlPlaneConfig.Members)
+}
