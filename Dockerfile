@@ -17,7 +17,12 @@ FROM --platform=${BUILDPLATFORM} ${TOOLS} AS build
 ENV GOTOOLCHAIN=local
 ENV CGO_ENABLED=0
 ENV GO111MODULE=on
-ENV GOPROXY=https://proxy.golang.org
+# A proxy miss (e.g. a cached 404 for a CABPT tag looked up before it was pushed) falls
+# through to GitHub. The Polychoronix fork is exempt from sum.golang.org (which cannot
+# vouch for a version the proxy never saw); go.sum still verifies it, and every other
+# module keeps full checksum-database verification.
+ENV GOPROXY=https://proxy.golang.org,direct
+ENV GONOSUMDB=github.com/Polychoronix/*
 ENV GOCACHE=/.cache/go-build
 ENV GOMODCACHE=/.cache/mod
 SHELL ["/bin/bash", "-c"]
