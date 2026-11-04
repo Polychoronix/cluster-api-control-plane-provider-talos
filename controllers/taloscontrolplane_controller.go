@@ -1113,7 +1113,63 @@ func (r *TalosControlPlaneReconciler) reconcileConditions(ctx context.Context, c
 		})
 	}
 
+	r.reconcileConfigDriftSummary(ctx, tcp, machines)
+
 	return ctrl.Result{}, nil
+}
+
+// configDriftConditionType is CABPT's report-only ConfigDrift condition on a TalosConfig
+// (api/v1beta1.ConfigDriftCondition in cluster-api-bootstrap-provider-talos >= craci.6);
+// spelled out so this provider does not need that dependency bump to summarise it.
+const configDriftConditionType = "ConfigDrift"
+
+// reconcileConfigDriftSummary rolls the owned Machines' TalosConfig ConfigDrift conditions
+// up onto the TalosControlPlane: True names the drifted Machines and their differing
+// documents, False when every observed child reports no drift, Unknown while none has been
+// observed or any observation is pending. It is a summary only; nothing is applied.
+func (r *TalosControlPlaneReconciler) reconcileConfigDriftSummary(ctx context.Context, tcp *controlplanev1.TalosControlPlane, machines *clusterv1.MachineList) {
+	var drifted, pending []string
+	observed := 0
+	for i := range machines.Items {
+		machine := &machines.Items[i]
+		if !machine.DeletionTimestamp.IsZero() || !machine.Spec.Bootstrap.ConfigRef.IsDefined() || machine.Spec.Bootstrap.ConfigRef.Kind != "TalosConfig" {
+			continue
+		}
+		config := &cabptv1.TalosConfig{}
+		if r.Client.Get(ctx, client.ObjectKey{Namespace: machine.Namespace, Name: machine.Spec.Bootstrap.ConfigRef.Name}, config) != nil {
+			continue
+		}
+		condition := conditions.Get(config, configDriftConditionType)
+		if condition == nil {
+			continue
+		}
+		observed++
+		switch condition.Status {
+		case metav1.ConditionTrue:
+			drifted = append(drifted, machine.Name+": "+condition.Message)
+		case metav1.ConditionUnknown:
+			pending = append(pending, machine.Name)
+		}
+	}
+	summary := metav1.Condition{Type: configDriftConditionType, Status: metav1.ConditionFalse, Reason: "NoDrift"}
+	switch {
+	case len(drifted) > 0:
+		summary.Status = metav1.ConditionTrue
+		summary.Reason = "ConfigDrifted"
+		summary.Message = strings.Join(drifted, "; ")
+		if len(summary.Message) > 1024 {
+			summary.Message = summary.Message[:1024]
+		}
+	case observed == 0:
+		summary.Status = metav1.ConditionUnknown
+		summary.Reason = "ObservationPending"
+		summary.Message = "no control plane machine has been observed for drift yet"
+	case len(pending) > 0:
+		summary.Status = metav1.ConditionUnknown
+		summary.Reason = "ObservationPending"
+		summary.Message = "drift observation pending on: " + strings.Join(pending, ", ")
+	}
+	conditions.Set(tcp, summary)
 }
 
 func (r *TalosControlPlaneReconciler) reconcileMachineTemplateState(ctx context.Context, cluster *clusterv1.Cluster, tcp *controlplanev1.TalosControlPlane, machines *clusterv1.MachineList) error {
