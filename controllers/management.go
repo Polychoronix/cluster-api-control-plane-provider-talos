@@ -11,11 +11,14 @@ import (
 	op "github.com/siderolabs/cluster-api-bootstrap-provider-talos/pkg/updateoperation"
 	controlplanev1 "github.com/siderolabs/cluster-api-control-plane-provider-talos/api/v1beta1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"maps"
 	clusterv1 "sigs.k8s.io/cluster-api/api/core/v1beta2"
 	"sigs.k8s.io/cluster-api/util/conditions"
 	"sigs.k8s.io/cluster-api/util/patch"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"slices"
+	"strings"
 	"time"
 )
 
@@ -100,11 +103,37 @@ func (r *TalosControlPlaneReconciler) reconcileManagement(ctx context.Context, t
 		return false, ctrl.Result{RequeueAfter: requeueDuration}, r.setActivationStatus(ctx, tcp, false, "ConsentAbsent")
 	}
 	if _, err = op.ActivateManagement(ctx, r.Client, r.APIReader, request); err != nil {
-		return true, ctrl.Result{RequeueAfter: requeueDuration}, r.setActivationStatus(ctx, tcp, false, "ActivationPending")
+		return true, ctrl.Result{RequeueAfter: requeueDuration}, r.setActivationFailure(ctx, tcp, "ActivationPending", err)
 	}
-	return false, ctrl.Result{}, r.setActivationStatus(ctx, tcp, true, "Activated")
+	return false, ctrl.Result{}, r.setActivationStatusMessage(ctx, tcp, true, "Activated", activatedMembersMessage(observation.Summary()))
 }
+
+// activatedMembersMessage names, on a successful activation, the members whose node does
+// not yet run the effective policy: drifted ones with the differing document identities,
+// and ones still on their own TalosConfig render. The in-place update converges both.
+func activatedMembersMessage(summary op.ManagementObservationSummary) string {
+	var parts []string
+	for _, name := range slices.Sorted(maps.Keys(summary.Drifted)) {
+		parts = append(parts, name+" drifted in "+strings.Join(summary.Drifted[name], ", "))
+	}
+	for _, name := range summary.CurrentBaselines {
+		parts = append(parts, name+" on its current TalosConfig render")
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	message := "converging in place: " + strings.Join(parts, "; ")
+	if len(message) > 512 {
+		message = message[:512]
+	}
+	return message
+}
+
 func (r *TalosControlPlaneReconciler) setActivationStatus(ctx context.Context, tcp *controlplanev1.TalosControlPlane, active bool, reason string) error {
+	return r.setActivationStatusMessage(ctx, tcp, active, reason, "")
+}
+
+func (r *TalosControlPlaneReconciler) setActivationStatusMessage(ctx context.Context, tcp *controlplanev1.TalosControlPlane, active bool, reason, message string) error {
 	helper, err := patch.NewHelper(tcp, r.Client)
 	if err != nil {
 		return err
@@ -113,7 +142,7 @@ func (r *TalosControlPlaneReconciler) setActivationStatus(ctx context.Context, t
 	if active {
 		status = metav1.ConditionTrue
 	}
-	conditions.Set(tcp, metav1.Condition{Type: bootstrapv1.ActivationReadyCondition, Status: status, Reason: reason, ObservedGeneration: tcp.Generation})
+	conditions.Set(tcp, metav1.Condition{Type: bootstrapv1.ActivationReadyCondition, Status: status, Reason: reason, Message: message, ObservedGeneration: tcp.Generation})
 	return helper.Patch(ctx, tcp, patch.WithStatusObservedGeneration{}, patch.WithOwnedConditions{Conditions: []string{bootstrapv1.ActivationReadyCondition}})
 }
 
@@ -122,8 +151,8 @@ func (r *TalosControlPlaneReconciler) setActivationStatus(ctx context.Context, t
 // detail. The log line is emitted once per distinct message so the requeue loop stays quiet.
 func (r *TalosControlPlaneReconciler) setActivationFailure(ctx context.Context, tcp *controlplanev1.TalosControlPlane, reason string, cause error) error {
 	message := cause.Error()
-	if len(message) > 256 {
-		message = message[:256]
+	if len(message) > 512 {
+		message = message[:512]
 	}
 	if previous := conditions.Get(tcp, bootstrapv1.ActivationReadyCondition); previous == nil || previous.Message != message || previous.Reason != reason {
 		r.Log.Info("Talos observation not complete", "taloscontrolplane", client.ObjectKeyFromObject(tcp).String(), "reason", reason, "stage", message)
