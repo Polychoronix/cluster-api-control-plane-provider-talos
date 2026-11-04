@@ -1,3 +1,12 @@
+## Unreleased — v0.9.0-craci.8
+
+### Changes
+
+* Vendor CABPT v0.9.0-craci.8 (`CABPT_VERSION`): drift to converge, identity-pinned activation records, stage detail on failures. As with craci.7, the observation runs CABPT's `pkg/updateoperation` in this process, so none of it reaches a TalosControlPlane without this bump.
+* Drift converges. A member whose live configuration matches neither the effective policy nor its own TalosConfig render is activated, not refused; `ActivationReady=True` says `converging in place: <member> drifted in <document ids>` (also `<member> on its current TalosConfig render`). A member whose TalosConfig reports CABPT `ConfigDrift=True` counts as outdated even when its spec already equals the desired render, so `reconcileMachines` offers it to the in-place update, which re-applies the full desired configuration with `ApplyConfiguration` AUTO. Reboot-class deltas (install, volume layout) reboot the node, exactly as any TalosControlPlane spec change does today. `BaselineMismatch` stays a hard block only for identity-class failures (trust CA, role, kubelet/boot witnesses, version, requested-vs-live spec).
+* Pause. A member paused with the standard CAPI `cluster.x-k8s.io/paused` annotation (on the Machine, its TalosConfig or the Cluster, or `Cluster.spec.paused`) is left out of `MachinesNeedingRollout`: no in-place update, no replacement, while it still reports `UpToDate=False` and CABPT keeps reporting its drift. Unpausing converges. Operator flow: `kubectl annotate talosconfig <name> cluster.x-k8s.io/paused=true` before a live edit (CABPT README "Pausing management for a live edit").
+* `ActivationReady=False` messages carry CABPT's stage detail (`ActivationPending` now too); cap raised to 512.
+
 ## Unreleased — v0.9.0-craci.7
 
 ### Changes
