@@ -1,3 +1,11 @@
+## Unreleased — v0.9.0-craci.6
+
+### Changes
+
+* `ConfigDrift` summary condition on the TalosControlPlane, rolled up from the CABPT craci.6 report-only `ConfigDrift` conditions of the owned Machines' TalosConfigs: True names the drifted Machines and their differing documents, False when every observed child reports none, Unknown while none has been observed or an observation is pending. Nothing is applied.
+* Pre-terminate hook (carried over from the craci.5 fixup): serviced before activation, never-joined Machines released immediately, unreachable-peer hold (`MachineDeletionBlocked`/`EtcdPeerUnreachable`) instead of fail-open.
+* Pairs with CABPT craci.6, whose activation policy resolves `spec.controlPlaneConfig.members` overlays (a members control plane could not (re-)activate on craci.5) and accepts the Machine's current TalosConfig render as an activation baseline so in-place updates can converge a node after a policy change.
+
 ## Unreleased — v0.9.0-craci.5
 
 ### Changes
