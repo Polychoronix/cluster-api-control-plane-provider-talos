@@ -1118,10 +1118,8 @@ func (r *TalosControlPlaneReconciler) reconcileConditions(ctx context.Context, c
 	return ctrl.Result{}, nil
 }
 
-// configDriftConditionType is CABPT's report-only ConfigDrift condition on a TalosConfig
-// (api/v1beta1.ConfigDriftCondition in cluster-api-bootstrap-provider-talos >= craci.6);
-// spelled out so this provider does not need that dependency bump to summarise it.
-const configDriftConditionType = "ConfigDrift"
+// configDriftConditionType is CABPT's report-only ConfigDrift condition on a TalosConfig.
+const configDriftConditionType = cabptv1.ConfigDriftCondition
 
 // reconcileConfigDriftSummary rolls the owned Machines' TalosConfig ConfigDrift conditions
 // up onto the TalosControlPlane: True names the drifted Machines and their differing

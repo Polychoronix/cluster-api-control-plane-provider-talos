@@ -87,7 +87,11 @@ func (r *TalosControlPlaneReconciler) reconcileManagement(ctx context.Context, t
 	}
 	observation, err := op.ObserveManagement(ctx, r.APIReader, request)
 	if err != nil {
-		return false, ctrl.Result{RequeueAfter: requeueDuration}, r.setActivationFailure(ctx, tcp, "ObservationPending", err)
+		reason := "ObservationPending"
+		if op.IsBaselineMismatch(err) {
+			reason = "BaselineMismatch"
+		}
+		return false, ctrl.Result{RequeueAfter: requeueDuration}, r.setActivationFailure(ctx, tcp, reason, err)
 	}
 	if _, err = op.RecordManagementObservation(ctx, r.Client, r.APIReader, observation); err != nil {
 		return true, ctrl.Result{RequeueAfter: requeueDuration}, err

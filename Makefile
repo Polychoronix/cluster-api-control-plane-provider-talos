@@ -120,8 +120,12 @@ manifests-local: ## Generate CRD/webhook/RBAC source without a container or clus
 	@$(CONTROLLER_GEN) crd:crdVersions=v1 paths="./api/..." output:crd:dir=config/crd/bases output:webhook:dir=config/webhook webhook
 	@$(CONTROLLER_GEN) rbac:roleName=manager-role paths="./controllers/..." output:rbac:dir=config/rbac
 
+.PHONY: check-cabpt-version
+check-cabpt-version: ## Verify go.mod vendors the CABPT release named in CABPT_VERSION.
+	@sh hack/check-cabpt-version.sh
+
 .PHONY: release-manifests
-release-manifests: manifests ## Render components/checksums with the explicitly selected image.
+release-manifests: check-cabpt-version manifests ## Render components/checksums with the explicitly selected image.
 	@sh hack/release-manifests.sh "$(TAG)" "$(CONTROLLER_IMAGE)" "$(ARTIFACTS)"
 
 .PHONY: release-notes

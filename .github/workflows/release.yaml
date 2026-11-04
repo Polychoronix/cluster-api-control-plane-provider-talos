@@ -30,6 +30,12 @@ jobs:
           image="${REGISTRY}/$owner/cluster-api-control-plane-talos-controller:$GITHUB_REF_NAME"
           revision=$(git rev-parse HEAD)
           printf 'USERNAME=%s\nCONTROLLER_IMAGE=%s\nREVISION=%s\n' "$owner" "$image" "$revision" >> "$GITHUB_ENV"
+      # The TalosControlPlane observation runs CABPT's pkg/updateoperation in this
+      # process, so a release must vendor the CABPT version it was written against.
+      # The Docker release stage calls hack/release-manifests.sh directly and never
+      # the Makefile target, hence the explicit check here before anything is built.
+      - name: check-cabpt-version
+        run: make check-cabpt-version
       - name: setup-qemu
         uses: docker/setup-qemu-action@v4
       - name: setup-buildx

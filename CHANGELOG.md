@@ -1,3 +1,11 @@
+## Unreleased — v0.9.0-craci.7
+
+### Changes
+
+* Vendor CABPT v0.9.0-craci.6. The TalosControlPlane observation (`controllers/management.go` → `op.ObserveManagement`) runs CABPT's `pkg/updateoperation` **in this process**, so CABPT craci.6's activation-policy fix (members overlays) and current-render baseline tolerance only take effect through this dependency; craci.6 of this provider still vendored craci.3 and kept failing `effective input differs from live authority policy`. This release is the real fix for a `members` control plane that cannot (re-)activate.
+* `ActivationReady` reason `BaselineMismatch` for post-dial comparison failures (typed stage error now available); `ConfigDrift` summary uses the typed CABPT condition constant.
+* Release guard: `CABPT_VERSION` names the CABPT release this provider must vendor; `controllers/dependency_test.go` and `make check-cabpt-version` (run by `release-manifests`) fail when go.mod's require/replace differ. Release checklist: set `CABPT_VERSION`, bump go.mod (require + replace), `go mod tidy`, then tag.
+
 ## Unreleased — v0.9.0-craci.6
 
 ### Changes
