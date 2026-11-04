@@ -1,7 +1,8 @@
-## Unreleased
+## Unreleased — v0.9.0-craci.9
 
 ### Changes
 
+* Vendor CABPT v0.9.0-craci.9 (`CABPT_VERSION`): observation failures now name the member, the endpoint it was dialed through and the client-side failure (`… actual Talos observation failed: <member> via <address> (tls <serverName>): … connection error: desc = "transport: …"`), which the `ActivationReady=False` message and the `Talos observation not complete` log line (`stage` key) carry verbatim. Note that since craci.8 an observation no longer stops at the first member whose configuration differs (that is drift now), so members that craci.7 never reached are dialed for the first time.
 * Dockerfile build stage: `GOPROXY=https://proxy.golang.org,direct` and `GONOSUMDB=github.com/Polychoronix/*`, so a proxy miss for the vendored CABPT fork falls through to GitHub (go.sum still verifies it; everything else keeps sum.golang.org). The craci.8 release build failed on a 404 proxy.golang.org had cached for CABPT `v0.9.0-craci.8` because that tag was looked up before it was pushed.
 * Release checklist addition: push the CABPT tag first and confirm `curl https://proxy.golang.org/github.com/!polychoronix/cluster-api-bootstrap-provider-talos/@v/<tag>.info` returns it before tagging this provider (a negative lookup is cached by the proxy for a while).
 
