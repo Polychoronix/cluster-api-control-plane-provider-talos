@@ -22,6 +22,7 @@ import (
 	"k8s.io/klog/v2"
 	clusterv1 "sigs.k8s.io/cluster-api/api/core/v1beta2"
 	"sigs.k8s.io/cluster-api/controllers/external"
+	"sigs.k8s.io/cluster-api/util/annotations"
 	"sigs.k8s.io/cluster-api/util/collections"
 	"sigs.k8s.io/cluster-api/util/conditions"
 	"sigs.k8s.io/cluster-api/util/patch"
@@ -84,7 +85,17 @@ func (c *ControlPlane) MachinesNeedingRollout() (collections.Machines, error) {
 		return collections.New(), nil
 	}
 
-	return c.MachinesWithOutdatedRolloutSpec()
+	outdated, err := c.MachinesWithOutdatedRolloutSpec()
+	if err != nil {
+		return nil, err
+	}
+	// A paused member (CAPI cluster.x-k8s.io/paused on the Machine, its TalosConfig or
+	// the Cluster) is held as it is: not updated in place and never handed to the
+	// replacement rollout. It still reports as not up to date.
+	return outdated.Filter(func(machine *clusterv1.Machine) bool {
+		config, found := c.talosConfigs[machine.Name]
+		return !annotations.IsPaused(c.Cluster, machine) && !(found && annotations.HasPaused(config))
+	}), nil
 }
 
 // MachinesWithOutdatedRolloutSpec returns Machines whose rollout-requiring fields do not match the desired control plane spec.
@@ -106,7 +117,10 @@ func (c *ControlPlane) MachinesWithOutdatedRolloutSpec() (collections.Machines, 
 			desired.TalosEndpoint = config.Spec.TalosEndpoint
 		}
 		configMatches := !found || reflect.DeepEqual(*desired, config.Spec)
-		if !matchesInfra(machine) || !matchesVersion(machine) || !configMatches {
+		// Live drift reported by CABPT counts as outdated: the node runs something other
+		// than its render, and the in-place update re-applies the desired configuration.
+		drifted := found && conditions.IsTrue(config, cabptv1.ConfigDriftCondition)
+		if !matchesInfra(machine) || !matchesVersion(machine) || !configMatches || drifted {
 			result.Insert(machine)
 		}
 	}

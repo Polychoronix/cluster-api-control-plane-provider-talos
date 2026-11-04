@@ -19,6 +19,7 @@ import (
 	"k8s.io/utils/ptr"
 	clusterv1 "sigs.k8s.io/cluster-api/api/core/v1beta2"
 	"sigs.k8s.io/cluster-api/util/collections"
+	"sigs.k8s.io/cluster-api/util/conditions"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
@@ -242,4 +243,65 @@ func TestInPlaceDesiredSpecUsesMemberOverlay(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, []string{"shared", "patch-leijonanpentu", "rotated"}, plan.desiredTalosConfig.Spec.StrategicPatches)
 	require.Equal(t, config.Spec.TalosEndpoint, plan.desiredTalosConfig.Spec.TalosEndpoint, "the live child's endpoint is kept")
+}
+
+// Live drift reported by CABPT on a member's TalosConfig makes that member outdated even
+// though its spec already matches the desired render: the in-place update re-applies the
+// desired configuration. A paused member (Machine, TalosConfig or Cluster) is held as it
+// is and never offered to the in-place or rollout path.
+func TestDriftedMemberIsOutdatedUnlessPaused(t *testing.T) {
+	cluster, tcp := memberFixtureTCP(fixtureMember("tiikerinpentu"), fixtureMember("leijonanpentu"))
+	machine := existingMemberMachine(tcp, "leijonanpentu", false)
+	machine.Spec.InfrastructureRef = clusterv1.ContractVersionedObjectReference{APIGroup: "infrastructure.cluster.x-k8s.io", Kind: "TestMachine", Name: machine.Name}
+	machine.Spec.Bootstrap.ConfigRef = clusterv1.ContractVersionedObjectReference{APIGroup: bootstrapv1.GroupVersion.Group, Kind: "TalosConfig", Name: machine.Name}
+	effective, err := tcp.Spec.EffectiveTalosConfigSpec(machine)
+	require.NoError(t, err)
+	config := &bootstrapv1.TalosConfig{ObjectMeta: metav1.ObjectMeta{Name: machine.Name, Namespace: "cluster"}, Spec: *effective}
+	infra := &unstructured.Unstructured{Object: map[string]any{"apiVersion": "infrastructure.cluster.x-k8s.io/v1beta2", "kind": "TestMachine", "metadata": map[string]any{"name": machine.Name, "namespace": "cluster"}, "spec": map[string]any{}}}
+	plane := &ControlPlane{TCP: tcp, Cluster: cluster, Machines: collections.FromMachines(machine), infraObjects: map[string]*unstructured.Unstructured{machine.Name: infra}, talosConfigs: map[string]*bootstrapv1.TalosConfig{machine.Name: config}}
+
+	outdated, err := plane.MachinesWithOutdatedRolloutSpec()
+	require.NoError(t, err)
+	require.Equal(t, 0, outdated.Len())
+
+	conditions.Set(config, metav1.Condition{Type: bootstrapv1.ConfigDriftCondition, Status: metav1.ConditionTrue, Reason: bootstrapv1.ConfigDriftedReason, Message: "live configuration differs from the TalosConfig render in: v1alpha1/KubeNodeConfig"})
+	outdated, err = plane.MachinesWithOutdatedRolloutSpec()
+	require.NoError(t, err)
+	require.Equal(t, 1, outdated.Len(), "drift makes the member outdated with an unchanged spec")
+
+	r := &TalosControlPlaneReconciler{Log: ctrl.Log}
+	plan, err := r.buildInPlacePlan(tcp, plane, machine)
+	require.NoError(t, err)
+	require.Equal(t, config.Spec, plan.desiredTalosConfig.Spec, "the plan re-applies the unchanged desired render")
+
+	conditions.Set(config, metav1.Condition{Type: bootstrapv1.ConfigDriftCondition, Status: metav1.ConditionUnknown, Reason: bootstrapv1.DriftObservationPendingReason})
+	outdated, err = plane.MachinesWithOutdatedRolloutSpec()
+	require.NoError(t, err)
+	require.Equal(t, 0, outdated.Len(), "a pending observation is not drift")
+
+	conditions.Set(config, metav1.Condition{Type: bootstrapv1.ConfigDriftCondition, Status: metav1.ConditionTrue, Reason: bootstrapv1.ConfigDriftedReason})
+	for name, pause := range map[string]func(){
+		"talosconfig": func() { config.Annotations = map[string]string{clusterv1.PausedAnnotation: "true"} },
+		"machine":     func() { machine.Annotations = map[string]string{clusterv1.PausedAnnotation: "true"} },
+		"cluster":     func() { cluster.Spec.Paused = ptr.To(true) },
+	} {
+		config.Annotations, machine.Annotations, cluster.Spec.Paused = nil, nil, nil
+		pause()
+		outdated, err = plane.MachinesWithOutdatedRolloutSpec()
+		require.NoError(t, err)
+		require.Equal(t, 1, outdated.Len(), "paused via %s: still reported as not up to date", name)
+		rollout, err := plane.MachinesNeedingRollout()
+		require.NoError(t, err)
+		require.Equal(t, 0, rollout.Len(), "paused via %s: held, never updated in place or rolled", name)
+	}
+	config.Annotations, machine.Annotations, cluster.Spec.Paused = nil, nil, nil
+	tcp.Spec.ControlPlaneConfig.Members[1].TalosConfigPatch.StrategicPatches = []string{"patch-leijonanpentu", "rotated"}
+	machine.Annotations = map[string]string{clusterv1.PausedAnnotation: "true"}
+	rollout, err := plane.MachinesNeedingRollout()
+	require.NoError(t, err)
+	require.Equal(t, 0, rollout.Len(), "a spec change on a paused member waits for the unpause")
+	machine.Annotations = nil
+	rollout, err = plane.MachinesNeedingRollout()
+	require.NoError(t, err)
+	require.Equal(t, 1, rollout.Len(), "unpausing converges")
 }
