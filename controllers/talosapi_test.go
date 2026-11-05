@@ -50,7 +50,18 @@ func (suite *ControllersSuite) TestBootstrapBootstrapsAClusterWithoutEtcdData() 
 	g.Expect(fakeClient.Create(suite.ctx, n)).To(Succeed())
 	g.Expect(createSecrets(suite.ctx, fakeClient, cluster, suite.secretsBundle, machineAddress)).To(Succeed())
 
-	g.Expect(controllers.BootstrapCluster(r, suite.ctx, cluster, tcp, []clusterv1.Machine{*m})).To(Succeed())
+	// A Machine that already holds a NodeRef is proof that an API server (and so etcd)
+	// has served: Bootstrap must never be sent, whatever the node reports.
+	joined := m.DeepCopy()
+	g.Expect(controllers.BootstrapCluster(r, suite.ctx, cluster, tcp, []clusterv1.Machine{*joined})).To(Succeed())
+	g.Expect(machineService.getBootstrapCalls()).To(Equal(0))
+	g.Expect(tcp.Status.Bootstrapped).To(BeTrue())
+
+	// The genuinely fresh first Machine (no NodeRef, no data, etcd not answering) is bootstrapped exactly once.
+	tcp.Status.Bootstrapped = false
+	first := m.DeepCopy()
+	first.Status.NodeRef = clusterv1.MachineNodeReference{}
+	g.Expect(controllers.BootstrapCluster(r, suite.ctx, cluster, tcp, []clusterv1.Machine{*first})).To(Succeed())
 	g.Expect(machineService.getBootstrapCalls()).To(Equal(1))
 }
 

@@ -1,3 +1,9 @@
+## Unreleased — v0.9.0-craci.10
+
+### Changes
+
+* **Fix: Talos `Bootstrap` could be issued against an existing cluster.** `bootstrapCluster` skipped Bootstrap only on `Cluster.status.initialization.controlPlaneInitialized` (or a v1beta2 condition that no longer exists) and otherwise probed `/var/lib/etcd/member` on each Machine, treating a probe error as "unknown, continue" and defaulting to Bootstrap on the lowest-named Machine. With the Cluster never marked initialized for this TalosControlPlane, a member whose data directory had just been wiped for a rejoin (tiikerinpentu) was bootstrapped into a NEW empty etcd cluster, and the next joiner followed it (split-brain behind the shared endpoint, seen live). The decision is now sticky and fails closed: `clusterInitializedEvidence` refuses Bootstrap on the Cluster v1beta2 initialization, the Cluster deprecated v1beta1 `ControlPlaneInitialized` condition, the TalosControlPlane's own `status.initialization`/`status.bootstrapped`, any control-plane Machine with a NodeRef, or more than one control-plane Machine; the per-node probe refuses when a node's state cannot be read (only a missing `/var/lib/etcd/member` counts as empty) and treats any etcd member reported by any node as an existing cluster. A fresh single-node cluster still bootstraps.
+
 ## Unreleased — v0.9.0-craci.9
 
 ### Changes

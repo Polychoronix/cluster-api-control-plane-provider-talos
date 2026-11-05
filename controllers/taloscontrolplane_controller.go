@@ -685,9 +685,15 @@ func (r *TalosControlPlaneReconciler) bootControlPlane(ctx context.Context, clus
 }
 
 func (r *TalosControlPlaneReconciler) bootstrapCluster(ctx context.Context, cluster *clusterv1.Cluster, tcp *controlplanev1.TalosControlPlane, machines []clusterv1.Machine) error {
-	if ptr.Deref(cluster.Status.Initialization.ControlPlaneInitialized, false) || conditions.IsTrue(cluster, "ControlPlaneInitialized") {
+	// Talos Bootstrap creates a NEW etcd cluster on an empty data directory. Issued against
+	// a control plane that already exists it forms a second, empty cluster behind the same
+	// endpoint (seen live: a member whose data directory had just been wiped for a rejoin
+	// became leader of an empty cluster and the next joiner followed it). The decision is
+	// therefore sticky and fails closed: any evidence that the cluster was ever initialized
+	// settles it forever, and a probe that cannot prove every node empty refuses.
+	if reason := clusterInitializedEvidence(cluster, tcp, machines); reason != "" {
 		if !tcp.Status.Bootstrapped {
-			r.Log.Info("owning Cluster is already initialized; skipping Talos Bootstrap")
+			r.Log.Info("owning Cluster is already initialized; skipping Talos Bootstrap", "evidence", reason)
 		}
 		tcp.Status.Bootstrapped = true
 		return nil
@@ -698,8 +704,6 @@ func (r *TalosControlPlaneReconciler) bootstrapCluster(ctx context.Context, clus
 	if len(machines) == 0 {
 		return fmt.Errorf("no Machines to use for bootstrap")
 	}
-	// Never combine endpoints with distinct TLS names or routing targets. Keep
-	// the deterministic bootstrap candidate's client for its later Bootstrap RPC.
 	selected := &machines[0]
 	for i := range machines {
 		if machines[i].Name < selected.Name {
@@ -717,20 +721,29 @@ func (r *TalosControlPlaneReconciler) bootstrapCluster(ctx context.Context, clus
 		machine := &machines[i]
 		c, rpcCtx, err := r.talosClientForMachine(ctx, tcp, machine)
 		if err != nil {
-			return err
+			return fmt.Errorf("cannot prove %q has no etcd state, refusing Talos Bootstrap: %w", machine.Name, err)
 		}
-		bootstrapped, err := hasEtcdData(rpcCtx, c)
+		bootstrapped, dataErr := hasEtcdData(rpcCtx, c)
+		members, memberErr := hasEtcdMembers(rpcCtx, c)
 		if machine == selected {
 			bootstrapClient, bootstrapCtx = c, rpcCtx
 		} else {
 			c.Close() //nolint:errcheck
 		}
-		if err != nil {
-			r.Log.Info("could not check for etcd data on node", "machine", machine.Name, "error", err.Error())
-			continue
-		}
-		if bootstrapped {
+		if bootstrapped || members {
+			r.Log.Info("etcd state found on a control-plane node; the cluster is initialized, never issuing Talos Bootstrap", "machine", machine.Name, "data", bootstrapped, "members", members)
+			tcp.Status.Bootstrapped = true
 			return nil
+		}
+		// A missing /var/lib/etcd/member is the empty-node answer; anything else (transport,
+		// permission, timeout) leaves the node's state unknown and the bootstrap refused.
+		if dataErr != nil && !isMissingPath(dataErr) {
+			return fmt.Errorf("cannot prove %q has no etcd data, refusing Talos Bootstrap: %w", machine.Name, dataErr)
+		}
+		// etcd not answering is the normal state of an empty node, so a member-list error
+		// is not evidence either way; it is logged for the operator.
+		if memberErr != nil {
+			r.Log.V(1).Info("etcd member list unavailable on node", "machine", machine.Name, "error", memberErr.Error())
 		}
 	}
 	if err := bootstrapClient.Bootstrap(bootstrapCtx, &machineapi.BootstrapRequest{}); err != nil && status.Code(err) != codes.AlreadyExists {
@@ -740,7 +753,68 @@ func (r *TalosControlPlaneReconciler) bootstrapCluster(ctx context.Context, clus
 	return nil
 }
 
-// hasEtcdData reports whether the node the context addresses has an etcd data directory.
+// clusterInitializedEvidence names the first sticky proof that the workload control plane
+// has existed, or "" when there is none: the Cluster's v1beta2 initialization and its
+// deprecated v1beta1 ControlPlaneInitialized condition (core CAPI never resets either),
+// this TalosControlPlane's own initialization/bootstrapped status, a control-plane
+// Machine that holds a NodeRef (a kubelet registered, so an API server and etcd served),
+// and more than one control-plane Machine (the second is only ever created after the
+// first was bootstrapped).
+func clusterInitializedEvidence(cluster *clusterv1.Cluster, tcp *controlplanev1.TalosControlPlane, machines []clusterv1.Machine) string {
+	switch {
+	case ptr.Deref(cluster.Status.Initialization.ControlPlaneInitialized, false):
+		return "Cluster status.initialization.controlPlaneInitialized"
+	case conditions.IsTrue(cluster, "ControlPlaneInitialized"):
+		return "Cluster condition ControlPlaneInitialized"
+	case cluster.Status.Deprecated != nil && cluster.Status.Deprecated.V1Beta1 != nil && v1beta1ConditionTrue(cluster.Status.Deprecated.V1Beta1.Conditions, "ControlPlaneInitialized"):
+		return "Cluster deprecated v1beta1 condition ControlPlaneInitialized"
+	case ptr.Deref(tcp.Status.Initialization.ControlPlaneInitialized, false):
+		return "TalosControlPlane status.initialization.controlPlaneInitialized"
+	case tcp.Status.Bootstrapped:
+		return "TalosControlPlane status.bootstrapped"
+	}
+	for i := range machines {
+		if machines[i].Status.NodeRef.IsDefined() {
+			return "Machine " + machines[i].Name + " has a NodeRef"
+		}
+	}
+	if len(machines) > 1 {
+		return fmt.Sprintf("%d control-plane Machines exist", len(machines))
+	}
+	return ""
+}
+
+func v1beta1ConditionTrue(conds clusterv1.Conditions, conditionType string) bool {
+	for i := range conds {
+		if string(conds[i].Type) == conditionType && conds[i].Status == corev1.ConditionTrue {
+			return true
+		}
+	}
+	return false
+}
+
+// hasEtcdMembers asks the node's etcd for its member list. A node whose etcd is not
+// running answers with an RPC error, which etcdNotRunning classifies; any member seen
+// means a cluster exists.
+func hasEtcdMembers(ctx context.Context, c *talosclient.Client) (bool, error) {
+	resp, err := c.EtcdMemberList(ctx, &machineapi.EtcdMemberListRequest{})
+	if err != nil {
+		return false, err
+	}
+	for _, message := range resp.GetMessages() {
+		if len(message.GetMembers()) > 0 {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+// isMissingPath reports the LS answer for a path that does not exist (Talos returns the
+// lstat error text of the missing root).
+func isMissingPath(err error) bool {
+	return talosclient.StatusCode(err) == codes.NotFound || strings.Contains(err.Error(), "no such file or directory")
+}
+
 func hasEtcdData(ctx context.Context, c *talosclient.Client) (bool, error) {
 	list, err := c.LS(ctx, &machineapi.ListRequest{Root: "/var/lib/etcd/member"})
 	if err != nil {

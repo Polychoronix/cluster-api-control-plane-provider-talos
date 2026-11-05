@@ -17,6 +17,7 @@ import (
 	"net"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -26,8 +27,10 @@ import (
 	clientconfig "github.com/siderolabs/talos/pkg/machinery/client/config"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/metadata"
+	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/emptypb"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -41,12 +44,17 @@ import (
 
 type endpointMachineServer struct {
 	machineapi.UnimplementedMachineServiceServer
+	// fresh makes the node look like one that never ran etcd: no members, no data.
+	fresh *atomic.Bool
 }
 
 func (*endpointMachineServer) ServiceList(context.Context, *emptypb.Empty) (*machineapi.ServiceListResponse, error) {
 	return &machineapi.ServiceListResponse{Messages: []*machineapi.ServiceList{{Services: []*machineapi.ServiceInfo{{Id: "etcd", State: "Running", Events: &machineapi.ServiceEvents{Events: []*machineapi.ServiceEvent{{State: "Running"}}}, Health: &machineapi.ServiceHealth{Healthy: true}}}}}}, nil
 }
-func (*endpointMachineServer) EtcdMemberList(context.Context, *machineapi.EtcdMemberListRequest) (*machineapi.EtcdMemberListResponse, error) {
+func (s *endpointMachineServer) EtcdMemberList(context.Context, *machineapi.EtcdMemberListRequest) (*machineapi.EtcdMemberListResponse, error) {
+	if s.fresh != nil && s.fresh.Load() {
+		return nil, status.Error(codes.Unknown, "error building etcd client: context deadline exceeded")
+	}
 	return &machineapi.EtcdMemberListResponse{Messages: []*machineapi.EtcdMembers{{Members: []*machineapi.EtcdMember{{Id: 1, Hostname: "cp-one"}, {Id: 2, Hostname: "cp-two"}}}}}, nil
 }
 func (*endpointMachineServer) EtcdForfeitLeadership(context.Context, *machineapi.EtcdForfeitLeadershipRequest) (*machineapi.EtcdForfeitLeadershipResponse, error) {
@@ -61,7 +69,10 @@ func (*endpointMachineServer) EtcdRemoveMemberByID(context.Context, *machineapi.
 func (*endpointMachineServer) Bootstrap(context.Context, *machineapi.BootstrapRequest) (*machineapi.BootstrapResponse, error) {
 	return &machineapi.BootstrapResponse{}, nil
 }
-func (*endpointMachineServer) List(*machineapi.ListRequest, machineapi.MachineService_ListServer) error {
+func (s *endpointMachineServer) List(*machineapi.ListRequest, machineapi.MachineService_ListServer) error {
+	if s.fresh != nil && s.fresh.Load() {
+		return status.Error(codes.Unknown, "lstat /var/lib/etcd/member: no such file or directory")
+	}
 	return nil
 }
 func (*endpointMachineServer) Events(_ *machineapi.EventsRequest, stream machineapi.MachineService_EventsServer) error {
@@ -112,6 +123,7 @@ func TestPerMachineEndpointsActualMTLSAndRouting(t *testing.T) {
 	tcp := &controlplanev1.TalosControlPlane{ObjectMeta: metav1.ObjectMeta{Name: "cp", Namespace: "default", Labels: map[string]string{clusterv1.ClusterNameLabel: "cluster"}}, Spec: controlplanev1.TalosControlPlaneSpec{ControlPlaneConfig: controlplanev1.ControlPlaneConfig{ControlPlaneConfig: cabptv1.TalosConfigSpec{GenerateType: "controlplane"}}}}
 	var calls []endpointCall
 	var mu sync.Mutex
+	var fresh atomic.Bool
 	machines := []clusterv1.Machine{{ObjectMeta: metav1.ObjectMeta{Name: "cp-one", Namespace: "default", UID: "one"}}, {ObjectMeta: metav1.ObjectMeta{Name: "cp-two", Namespace: "default", UID: "two"}}}
 	configs := make([]*cabptv1.TalosConfig, len(machines))
 	for i := range machines {
@@ -149,7 +161,7 @@ func TestPerMachineEndpointsActualMTLSAndRouting(t *testing.T) {
 			record(stream.Context(), info.FullMethod)
 			return handler(srv, stream)
 		}))
-		machineapi.RegisterMachineServiceServer(server, &endpointMachineServer{})
+		machineapi.RegisterMachineServiceServer(server, &endpointMachineServer{fresh: &fresh})
 		go func() { _ = server.Serve(listener) }()
 		t.Cleanup(server.Stop)
 		machine.Spec.Bootstrap.ConfigRef = clusterv1.ContractVersionedObjectReference{APIGroup: cabptv1.GroupVersion.Group, Kind: "TalosConfig", Name: machine.Name}
@@ -163,7 +175,13 @@ func TestPerMachineEndpointsActualMTLSAndRouting(t *testing.T) {
 	require.NoError(t, r.nodesHealthcheck(t.Context(), tcp, machines))
 	require.NoError(t, r.etcdHealthcheck(t.Context(), tcp, machines))
 	require.NoError(t, r.ensureNodesBooted(t.Context(), tcp, machines))
-	require.NoError(t, r.bootstrapCluster(t.Context(), &clusterv1.Cluster{}, tcp, machines))
+	// Bootstrap is only ever issued to a single Machine that has never joined (no NodeRef)
+	// on a node without etcd data or members; the fixture flips into that state here.
+	fresh.Store(true)
+	first := []clusterv1.Machine{*machines[0].DeepCopy()}
+	first[0].Status.NodeRef = clusterv1.MachineNodeReference{}
+	require.NoError(t, r.bootstrapCluster(t.Context(), &clusterv1.Cluster{}, tcp, first))
+	fresh.Store(false)
 	require.NoError(t, r.etcdLeaveFromVictim(t.Context(), tcp, &machines[1]))
 	c, rpcCtx, err := r.talosClientForMachine(t.Context(), tcp, &machines[0])
 	require.NoError(t, err)
