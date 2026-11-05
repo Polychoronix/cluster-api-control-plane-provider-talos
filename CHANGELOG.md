@@ -1,3 +1,9 @@
+## Unreleased — v0.9.0-craci.11
+
+### Changes
+
+* Vendor CABPT v0.9.0-craci.11 (`CABPT_VERSION`). This provider runs CABPT's `pkg/updateoperation` in process for TalosControlPlane observation and activation validation, so with this bump those workload reads change too: one typed Node request without API discovery (was a discovering controller-runtime client) and a 15s per-request timeout (`op.WorkloadAPITimeout`, was a fixed 5s; CABPT sets it with `--workload-api-timeout`, this provider uses the default). A failed Node read is now `Talos management activated workload Node lookup failed: <node>: timed out (limit 15s)` (or `API status …` / `transport error`) and leaves `ActivationReady=False/ObservationPending` until the next successful read; `activated workload Node identity changed` now only means a Node that is gone or has another UID/providerID, and names it. CABPT's executor side: a never-issued in-place journal is discarded and re-planned instead of going `Ambiguous`, and an unreachable workload API is waited out rather than ending an issued transaction.
+
 ## Unreleased — v0.9.0-craci.10
 
 ### Changes
