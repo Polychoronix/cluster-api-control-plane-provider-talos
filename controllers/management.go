@@ -80,8 +80,15 @@ func (r *TalosControlPlaneReconciler) reconcileManagement(ctx context.Context, t
 		return false, ctrl.Result{}, op.ValidateManagementRetirement(ctx, r.APIReader, tcpManagementAuthority(tcp))
 	}
 	if state, err := op.ReadManagementStatus(ctx, r.APIReader, tcpManagementAuthority(tcp)); err == nil && state.Activated && tcp.Spec.Manage {
-		if err := r.validateActivatedManagement(ctx, tcp, cluster); err == nil {
+		err := r.validateActivatedManagement(ctx, tcp, cluster)
+		if err == nil {
 			return false, ctrl.Result{}, r.setActivationStatus(ctx, tcp, true, "Activated")
+		}
+		// An activated record that no longer validates is re-observed below. Name the
+		// failing stage once per fall from Activated: the observation that follows may
+		// re-activate or fail on a different stage, which would otherwise hide this one.
+		if conditions.IsTrue(tcp, bootstrapv1.ActivationReadyCondition) {
+			r.Log.Info("activated Talos management no longer validates; re-observing", "taloscontrolplane", client.ObjectKeyFromObject(tcp).String(), "stage", err.Error())
 		}
 	}
 	request, err := r.managementRequest(ctx, tcp, cluster)
@@ -97,7 +104,9 @@ func (r *TalosControlPlaneReconciler) reconcileManagement(ctx context.Context, t
 		return false, ctrl.Result{RequeueAfter: requeueDuration}, r.setActivationFailure(ctx, tcp, reason, err)
 	}
 	if _, err = op.RecordManagementObservation(ctx, r.Client, r.APIReader, observation); err != nil {
-		return true, ctrl.Result{RequeueAfter: requeueDuration}, err
+		// An activated snapshot that changed in an identity-class way stays fail-closed:
+		// management remains fenced and the condition names what changed.
+		return true, ctrl.Result{RequeueAfter: requeueDuration}, r.setActivationFailure(ctx, tcp, "ActivationInvalid", err)
 	}
 	if !tcp.Spec.Manage {
 		return false, ctrl.Result{RequeueAfter: requeueDuration}, r.setActivationStatus(ctx, tcp, false, "ConsentAbsent")
