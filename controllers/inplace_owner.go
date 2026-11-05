@@ -291,8 +291,11 @@ func (r *TalosControlPlaneReconciler) createOwnerPlan(ctx context.Context, tcp *
 	if r.APIReader.Get(ctx, client.ObjectKeyFromObject(update.machine), machine) != nil || r.APIReader.Get(ctx, client.ObjectKeyFromObject(update.desiredTalosConfig), config) != nil || r.APIReader.Get(ctx, client.ObjectKeyFromObject(infra), infra) != nil {
 		return nil, nil, ownerError("Prepared object lookup")
 	}
-	if !reflect.DeepEqual(machine.Spec, update.machine.Spec) || !reflect.DeepEqual(config.Spec, update.currentTalosConfig.Spec) {
-		return nil, nil, ownerError("CAN-approved snapshot changed")
+	if !reflect.DeepEqual(machine.Spec, update.machine.Spec) {
+		return nil, nil, ownerError("CAN-approved snapshot changed (Machine spec)")
+	}
+	if !reflect.DeepEqual(config.Spec, update.currentTalosConfig.Spec) {
+		return nil, nil, ownerError("CAN-approved snapshot changed (TalosConfig spec)")
 	}
 	if machine.UID != update.machine.UID || config.UID != update.currentTalosConfig.UID || infra.GetUID() != update.desiredInfraMachine.GetUID() || !reflect.DeepEqual(machine.OwnerReferences, update.machine.OwnerReferences) || !reflect.DeepEqual(config.OwnerReferences, update.currentTalosConfig.OwnerReferences) {
 		return nil, nil, ownerError("CAN-approved identity changed")

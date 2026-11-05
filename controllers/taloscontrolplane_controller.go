@@ -1502,12 +1502,27 @@ func copyMachineReadinessGates(in []clusterv1.MachineReadinessGate) []clusterv1.
 	return out
 }
 
+// defaultNodeDeletionTimeoutSeconds mirrors core's Machine defaulting webhook
+// (core/webhooks/admission defaultNodeDeletionTimeoutSeconds, CAPI v1.14); importing that
+// package would pull its webhook dependencies into this provider.
+const defaultNodeDeletionTimeoutSeconds = int32(10)
+
+// buildMachineDeletionSpec renders the Machine deletion spec exactly as the API server stores
+// it: core's Machine defaulting webhook fills a nil NodeDeletionTimeoutSeconds with 10s. A nil
+// desired value never converged, so reconcileMachineTemplateState patched it every reconcile
+// and left the in-memory Machine (the patch helper does not read the response back) different
+// from the live one, which createOwnerPlan rejected as a changed CAN-approved snapshot.
 func buildMachineDeletionSpec(deletion controlplanev1.TalosControlPlaneMachineTemplateDeletionSpec) clusterv1.MachineDeletionSpec {
-	return clusterv1.MachineDeletionSpec{
+	out := clusterv1.MachineDeletionSpec{
 		NodeDrainTimeoutSeconds:        copyInt32Pointer(deletion.NodeDrainTimeoutSeconds),
 		NodeVolumeDetachTimeoutSeconds: copyInt32Pointer(deletion.NodeVolumeDetachTimeoutSeconds),
 		NodeDeletionTimeoutSeconds:     copyInt32Pointer(deletion.NodeDeletionTimeoutSeconds),
 	}
+	if out.NodeDeletionTimeoutSeconds == nil {
+		timeout := defaultNodeDeletionTimeoutSeconds
+		out.NodeDeletionTimeoutSeconds = &timeout
+	}
+	return out
 }
 
 func copyInt32Pointer(in *int32) *int32 {
