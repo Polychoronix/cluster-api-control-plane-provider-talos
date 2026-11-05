@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"reflect"
 	"sort"
-	"strings"
 	"time"
 
 	"github.com/pkg/errors"
@@ -525,13 +524,12 @@ func listEtcdMembers(ctx context.Context, c etcdCalls) ([]*machineapi.EtcdMember
 // matchEtcdMember looks the machine up in a member list. A nil member with a nil error means
 // the machine is not a member (anymore).
 func matchEtcdMember(members []*machineapi.EtcdMember, victim *clusterv1.Machine) (*machineapi.EtcdMember, error) {
-	hostname := machineHostName(victim)
-	if hostname == "" {
+	if len(machineHostNames(victim)) == 0 {
 		return nil, errors.Errorf("machine %q has no hostname to match against the etcd member list", victim.Name)
 	}
 
 	for _, member := range members {
-		if strings.EqualFold(member.Hostname, hostname) {
+		if machineIsEtcdMember(victim, member.Hostname) {
 			return member, nil
 		}
 	}

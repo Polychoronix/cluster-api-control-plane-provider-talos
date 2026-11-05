@@ -191,7 +191,7 @@ func (r *TalosControlPlaneReconciler) auditEtcd(ctx context.Context, tcp *contro
 
 		present := false
 		for _, machine := range machines.Items {
-			if strings.EqualFold(machineHostName(&machine), member.Hostname) {
+			if machineIsEtcdMember(&machine, member.Hostname) {
 				present = true
 
 				break
@@ -199,7 +199,7 @@ func (r *TalosControlPlaneReconciler) auditEtcd(ctx context.Context, tcp *contro
 		}
 
 		if !present {
-			r.Log.Info("found etcd member that doesn't exist as controlplane machine", "member", member)
+			r.Log.Info("found etcd member that doesn't exist as controlplane machine", "member", member, "machines", machineNames(machines.Items), "via", designatedCPMachine.Name)
 
 			if err = r.forceEtcdLeave(rpcCtx, c, member); err != nil {
 				return fmt.Errorf("error leaving etcd for member %q via machine %q", member, designatedCPMachine.Name)
@@ -208,4 +208,12 @@ func (r *TalosControlPlaneReconciler) auditEtcd(ctx context.Context, tcp *contro
 	}
 
 	return nil
+}
+
+func machineNames(machines []clusterv1.Machine) []string {
+	names := make([]string, 0, len(machines))
+	for i := range machines {
+		names = append(names, machines[i].Name+"="+strings.Join(machineHostNames(&machines[i]), "|"))
+	}
+	return names
 }
