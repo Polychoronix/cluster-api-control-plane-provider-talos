@@ -59,7 +59,7 @@ func TestRuntimeScopeDiscovery(t *testing.T) {
 		{name: "empty selects all without namespace read", selector: &metav1.LabelSelector{}, namespace: "absent", wantMatch: true},
 		{name: "missing namespace", selector: &metav1.LabelSelector{MatchLabels: map[string]string{"tenant": "selected"}}, namespace: "absent", wantError: true},
 		{name: "invalid selector", selector: &metav1.LabelSelector{MatchExpressions: []metav1.LabelSelectorRequirement{{Key: "tenant", Operator: "invalid"}}}, wantError: true},
-		{name: "missing selector was not admission defaulted", wantError: true},
+		{name: "missing selector selects all like {} without namespace read", namespace: "absent", wantMatch: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			c, _, machine := scopeFixture(t, tc.selector)

@@ -235,10 +235,10 @@ func (c *Client) matchNamespace(ctx context.Context, config *runtimev1.Extension
 	if forObject == nil {
 		return false, fmt.Errorf("runtime hook object is required")
 	}
-	// Core admission defaults an omitted selector to {} and requires it afterward.
-	// An unexpected missing selector must not become empty discovery or global scope.
+	// Core CAPI treats an omitted selector as {} (every namespace); CABPT's registrar
+	// creates its ExtensionConfig without one, so nil must select all, not fail.
 	if config.Spec.NamespaceSelector == nil {
-		return false, fmt.Errorf("ExtensionConfig %s has no namespaceSelector", config.Name)
+		return true, nil
 	}
 	selector, err := metav1.LabelSelectorAsSelector(config.Spec.NamespaceSelector)
 	if err != nil {
