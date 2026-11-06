@@ -1,23 +1,24 @@
-## Unreleased — v0.9.0-craci.13
+## v0.9.0-craci.13
 
 ### Changes
 
 * **Fix: every in-place update ended with `control-plane update Consumed plan deletion failed; intervention required`.** The last step of an owner transaction deletes its `tcp-<uid>-inplace` plan Secret, but the manager role (`config/rbac/role.yaml`, kubebuilder marker in `taloscontrolplane_controller.go`) never granted `delete` on secrets; envtest and the fake client do not enforce RBAC, so no test saw it. The plan stayed `Consumed`, the reconciler held every Machine change behind it, and the updated Machine reported `UpToDate=False/Updating`. The role now grants `delete` on secrets (a test pins it), and a failed deletion is classified: already gone is success, `Forbidden` names the missing verb, a conflict or other failure is retried with a fresh read on the next reconcile, none of them "intervention required" — the plan is Consumed, so deleting it is only cleanup.
+* Vendor CABPT v0.9.0-craci.13 (`CABPT_VERSION`), lockstep only: no CABPT code change since craci.12.
 
-## Unreleased — v0.9.0-craci.12
+## v0.9.0-craci.12
 
 ### Changes
 
 * Vendor CABPT v0.9.0-craci.12 (`CABPT_VERSION`). CABPT's `UpdateMachine` executor now settles an `Ambiguous` in-place journal by observing the node instead of always demanding intervention: the requested configuration live (order-insensitive document comparison) completes it as `Observed` with its receipt once recovery holds, so this provider's owner plan proceeds through its normal receipt-consumption path; a never-acknowledged apply whose node still runs the planned-time configuration is discarded and re-planned; anything else stays `Ambiguous` with the reason. In process, this provider reads the same journals (`op.ReadJournal`/`ReadReceipt` on the owner plan path), which now carry an optional `baselineDigest` field; owner-plan handling is unchanged. The in-place completion comparison (`ConfigurationDiff`) is order-insensitive for every consumer.
 * The same CABPT release finishes in-place completions that previously failed every call with `Talos update operation Secret CAS conflict failed` (leijonanpentu, journal Planned with its Apply step Observed): CABPT's completion evaluation outran Cluster API's 10s hook timeout and its final write died on the cancelled request context. CABPT now evaluates `UpdateMachine` detached from the request (single-flight per Machine, 30s handler timeout), re-reads the journal before the completion write, and reports a lost compare-and-swap separately from an interrupted write. In process, this provider's own `PatchData` writes (management record, receipt consumption) now report `Secret write interrupted …` / `Secret write rejected (…)` instead of `Secret CAS conflict` when that is what happened.
 
-## Unreleased — v0.9.0-craci.11
+## v0.9.0-craci.11
 
 ### Changes
 
 * Vendor CABPT v0.9.0-craci.11 (`CABPT_VERSION`). This provider runs CABPT's `pkg/updateoperation` in process for TalosControlPlane observation and activation validation, so with this bump those workload reads change too: one typed Node request without API discovery (was a discovering controller-runtime client) and a 15s per-request timeout (`op.WorkloadAPITimeout`, was a fixed 5s; CABPT sets it with `--workload-api-timeout`, this provider uses the default). A failed Node read is now `Talos management activated workload Node lookup failed: <node>: timed out (limit 15s)` (or `API status …` / `transport error`) and leaves `ActivationReady=False/ObservationPending` until the next successful read; `activated workload Node identity changed` now only means a Node that is gone or has another UID/providerID, and names it. CABPT's executor side: a never-issued in-place journal is discarded and re-planned instead of going `Ambiguous`, and an unreachable workload API is waited out rather than ending an issued transaction.
 
-## Unreleased — v0.9.0-craci.10
+## v0.9.0-craci.10
 
 ### Changes
 
