@@ -82,6 +82,7 @@ func (r *TalosControlPlaneTemplate) validate() (admission.Warnings, error) {
 	allErrs = append(allErrs, validateMachineNamingStrategy(r.Spec.Template.Spec.MachineNamingStrategy, field.NewPath("spec", "template", "spec", "machineNamingStrategy"))...)
 	allErrs = append(allErrs, validateRolloutStrategy(r.Spec.Template.Spec.RolloutStrategy, field.NewPath("spec", "template", "spec", "rolloutStrategy"))...)
 	allErrs = append(allErrs, validateControlPlaneConfig(&r.Spec.Template.Spec.ControlPlaneConfig, field.NewPath("spec", "template", "spec", "controlPlaneConfig"))...)
+	allErrs = append(allErrs, validateKubeconfig(r.Spec.Template.Spec.Kubeconfig, field.NewPath("spec", "template", "spec", "kubeconfig"))...)
 	if len(allErrs) == 0 {
 		return nil, nil
 	}

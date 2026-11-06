@@ -141,8 +141,23 @@ A hold:
 - **never fails open.** Decision B (2026-09-17): match KCP; the documented escape hatch of
   removing the hook annotation remains the way out.
 
-Connectivity failures to the peer or the victim keep today's fail-open behaviour; only the
-quorum verdict holds indefinitely.
+Connectivity failures *after* a peer has listed the members (leave, remove) keep today's
+fail-open behaviour. Two cases decided on 2026-11-03 after a live incident (a replacement
+control plane that never registered its node parked in `Deleting` for good):
+
+- **No reachable peer** (`selectEtcdPeer` finds none, or the chosen peer cannot be dialed)
+  holds like the quorum verdict: no fail-open, `etcd-cleanup-observed-at` cleared, Warning
+  event `EtcdPeerUnreachable` and TalosControlPlane condition `MachineDeletionBlocked`
+  (reason `EtcdPeerUnreachable`) naming the escape hatch — remove the member by hand and drop
+  the hook annotation. Peers are only TCP-owned Machines; the Cluster's external
+  `controlPlaneEndpoint` is never used as one (it is an API-access proxy, not a Talos API).
+- **Never joined** — no `NodeRef`, the Machine's TalosConfig never reached `ActivationReady`
+  and has no update journal — releases immediately with `EtcdCleanupSkipped`: nothing joined
+  etcd, so there is nothing to leave and no peer is needed. Any evidence to the contrary,
+  including a failed lookup, takes the regular path.
+
+Hooks are also serviced on the pre-activation branch of `reconcile`; before this, a Machine
+deleted while the control plane had not activated was never looked at.
 
 `findEtcdMember` is split into `listEtcdMembers(ctx, peer)` and `matchEtcdMember(members, victim)`
 so the same list serves the match and the count.
@@ -181,7 +196,7 @@ machine is gone and the preflight checks pass.
 - Preflight failures are not errors: condition + event + requeue. Talos call failures inside
   the fresh components check make that machine unhealthy, which fails the preflight with the
   underlying error in the message.
-- Quorum hold: no error, no deadline.
+- Quorum hold and unreachable-peer hold: no error, no deadline.
 - Everything else in the hook keeps the existing fail-open contract.
 
 ## Testing

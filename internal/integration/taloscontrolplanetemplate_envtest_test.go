@@ -129,6 +129,7 @@ func TestTalosControlPlaneTemplateWebhookIntegration(t *testing.T) {
 			},
 		},
 	}
+	direct.Spec.Kubeconfig.Mode = controlplanev1.KubeconfigModeExternal
 	if err := k8sClient.Create(ctx, direct); err != nil {
 		t.Fatalf("expected TalosControlPlane create with machineTemplate.spec.infrastructureRef to succeed: %v", err)
 	}
@@ -141,6 +142,14 @@ func TestTalosControlPlaneTemplateWebhookIntegration(t *testing.T) {
 		t.Fatalf("expected machineTemplate.spec.infrastructureRef name %q, got %q", "cp-template", got)
 	}
 
+	if persistedDirect.Spec.Kubeconfig.Mode != controlplanev1.KubeconfigModeExternal {
+		t.Fatal("external kubeconfig mode was pruned from the control plane API")
+	}
+	invalidKubeconfig := persistedDirect.DeepCopy()
+	invalidKubeconfig.Spec.Kubeconfig.Mode = "Unsupported"
+	if err := k8sClient.Update(ctx, invalidKubeconfig); err == nil {
+		t.Fatal("unsupported kubeconfig mode was admitted")
+	}
 	missingRef := &controlplanev1.TalosControlPlane{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "direct-missing-ref",
@@ -208,6 +217,7 @@ func TestTalosControlPlaneTemplateWebhookIntegration(t *testing.T) {
 			},
 		},
 	}
+	valid.Spec.Template.Spec.Kubeconfig.Mode = controlplanev1.KubeconfigModeExternal
 
 	if err := k8sClient.Create(ctx, valid); err != nil {
 		t.Fatalf("expected valid template create to succeed: %v", err)
@@ -216,6 +226,9 @@ func TestTalosControlPlaneTemplateWebhookIntegration(t *testing.T) {
 	persisted := &controlplanev1.TalosControlPlaneTemplate{}
 	if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(valid), persisted); err != nil {
 		t.Fatalf("failed to get persisted template: %v", err)
+	}
+	if persisted.Spec.Template.Spec.Kubeconfig.Mode != controlplanev1.KubeconfigModeExternal {
+		t.Fatal("external kubeconfig mode was pruned from the template API")
 	}
 
 	if persisted.Spec.Template.Spec.RolloutStrategy == nil {
@@ -236,7 +249,8 @@ func TestTalosControlPlaneTemplateWebhookIntegration(t *testing.T) {
 		Spec: controlplanev1.TalosControlPlaneTemplateSpec{
 			Template: controlplanev1.TalosControlPlaneTemplateResource{
 				Spec: controlplanev1.TalosControlPlaneTemplateResourceSpec{
-					RolloutStrategy: &controlplanev1.RolloutStrategy{Type: controlplanev1.RolloutStrategyType("Invalid")},
+					RolloutStrategy:    &controlplanev1.RolloutStrategy{Type: controlplanev1.RolloutStrategyType("Invalid")},
+					ControlPlaneConfig: controlplanev1.ControlPlaneConfig{ControlPlaneConfig: talosConfigSpec("controlplane", nil)},
 				},
 			},
 		},

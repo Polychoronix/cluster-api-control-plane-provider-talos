@@ -44,11 +44,19 @@ type TalosControlPlaneTemplateResourceSpec struct {
 	// to use for initializing and joining machines to the control plane.
 	ControlPlaneConfig ControlPlaneConfig `json:"controlPlaneConfig"`
 
+	// +optional
+	// +kubebuilder:default=false
+	Manage bool `json:"manage,omitempty"`
+
 	// The RolloutStrategy to use to replace control plane machines with
 	// new ones.
 	// +optional
 	// +kubebuilder:default={type: "RollingUpdate", rollingUpdate: {maxSurge: 1}}
 	RolloutStrategy *RolloutStrategy `json:"rolloutStrategy,omitempty"`
+
+	// Kubeconfig selects management of the standard Cluster kubeconfig Secret.
+	// +optional
+	Kubeconfig KubeconfigSpec `json:"kubeconfig,omitempty,omitzero"`
 }
 
 // TalosControlPlaneTemplateMachineTemplate is the MachineTemplate carried by a

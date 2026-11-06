@@ -16,6 +16,12 @@ const (
 )
 
 const (
+	// VersionObservedCondition reports complete running per-node API-server
+	// observations with no in-place completion handshake still outstanding.
+	VersionObservedCondition = "VersionObserved"
+)
+
+const (
 	// MachinesBootstrapped is tracking control planes bootstrap status.
 	MachinesBootstrapped = "MachinesBootstrapped"
 
@@ -103,6 +109,16 @@ const (
 )
 
 const (
+	// MachineDeletionBlockedCondition is True while a deleting control-plane Machine's
+	// pre-terminate etcd cleanup cannot proceed without the operator.
+	MachineDeletionBlockedCondition = "MachineDeletionBlocked"
+
+	// EtcdPeerUnreachableReason documents that no owned control-plane Machine can be reached
+	// to verify or remove the deleting Machine's etcd membership.
+	EtcdPeerUnreachableReason = "EtcdPeerUnreachable"
+)
+
+const (
 	// MachinesCreatedCondition documents that the machines controlled by the TalosControlPlane are created.
 	// When this condition is false, it indicates that there was an error when cloning the infrastructure/bootstrap template or
 	// when generating the machine object.
@@ -122,4 +138,10 @@ const (
 
 	// MachinesCreatedReason documents that the TalosControlPlane has successfully created all required machines.
 	MachinesCreatedReason = "MachinesCreated"
+)
+
+const (
+	// KubeconfigAvailableCondition reports validation of external Kubernetes access.
+	// API reachability is separately observed by the Available condition.
+	KubeconfigAvailableCondition = "KubeconfigAvailable"
 )

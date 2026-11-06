@@ -1,3 +1,93 @@
+## v0.9.0-craci.13
+
+### Changes
+
+* **Fix: every in-place update ended with `control-plane update Consumed plan deletion failed; intervention required`.** The last step of an owner transaction deletes its `tcp-<uid>-inplace` plan Secret, but the manager role (`config/rbac/role.yaml`, kubebuilder marker in `taloscontrolplane_controller.go`) never granted `delete` on secrets; envtest and the fake client do not enforce RBAC, so no test saw it. The plan stayed `Consumed`, the reconciler held every Machine change behind it, and the updated Machine reported `UpToDate=False/Updating`. The role now grants `delete` on secrets (a test pins it), and a failed deletion is classified: already gone is success, `Forbidden` names the missing verb, a conflict or other failure is retried with a fresh read on the next reconcile, none of them "intervention required" — the plan is Consumed, so deleting it is only cleanup.
+* Vendor CABPT v0.9.0-craci.13 (`CABPT_VERSION`), lockstep only: no CABPT code change since craci.12.
+
+## v0.9.0-craci.12
+
+### Changes
+
+* Vendor CABPT v0.9.0-craci.12 (`CABPT_VERSION`). CABPT's `UpdateMachine` executor now settles an `Ambiguous` in-place journal by observing the node instead of always demanding intervention: the requested configuration live (order-insensitive document comparison) completes it as `Observed` with its receipt once recovery holds, so this provider's owner plan proceeds through its normal receipt-consumption path; a never-acknowledged apply whose node still runs the planned-time configuration is discarded and re-planned; anything else stays `Ambiguous` with the reason. In process, this provider reads the same journals (`op.ReadJournal`/`ReadReceipt` on the owner plan path), which now carry an optional `baselineDigest` field; owner-plan handling is unchanged. The in-place completion comparison (`ConfigurationDiff`) is order-insensitive for every consumer.
+* The same CABPT release finishes in-place completions that previously failed every call with `Talos update operation Secret CAS conflict failed` (leijonanpentu, journal Planned with its Apply step Observed): CABPT's completion evaluation outran Cluster API's 10s hook timeout and its final write died on the cancelled request context. CABPT now evaluates `UpdateMachine` detached from the request (single-flight per Machine, 30s handler timeout), re-reads the journal before the completion write, and reports a lost compare-and-swap separately from an interrupted write. In process, this provider's own `PatchData` writes (management record, receipt consumption) now report `Secret write interrupted …` / `Secret write rejected (…)` instead of `Secret CAS conflict` when that is what happened.
+
+## v0.9.0-craci.11
+
+### Changes
+
+* Vendor CABPT v0.9.0-craci.11 (`CABPT_VERSION`). This provider runs CABPT's `pkg/updateoperation` in process for TalosControlPlane observation and activation validation, so with this bump those workload reads change too: one typed Node request without API discovery (was a discovering controller-runtime client) and a 15s per-request timeout (`op.WorkloadAPITimeout`, was a fixed 5s; CABPT sets it with `--workload-api-timeout`, this provider uses the default). A failed Node read is now `Talos management activated workload Node lookup failed: <node>: timed out (limit 15s)` (or `API status …` / `transport error`) and leaves `ActivationReady=False/ObservationPending` until the next successful read; `activated workload Node identity changed` now only means a Node that is gone or has another UID/providerID, and names it. CABPT's executor side: a never-issued in-place journal is discarded and re-planned instead of going `Ambiguous`, and an unreachable workload API is waited out rather than ending an issued transaction.
+
+## v0.9.0-craci.10
+
+### Changes
+
+* **Fix: Talos `Bootstrap` could be issued against an existing cluster.** `bootstrapCluster` skipped Bootstrap only on `Cluster.status.initialization.controlPlaneInitialized` (or a v1beta2 condition that no longer exists) and otherwise probed `/var/lib/etcd/member` on each Machine, treating a probe error as "unknown, continue" and defaulting to Bootstrap on the lowest-named Machine. With the Cluster never marked initialized for this TalosControlPlane, a member whose data directory had just been wiped for a rejoin (tiikerinpentu) was bootstrapped into a NEW empty etcd cluster, and the next joiner followed it (split-brain behind the shared endpoint, seen live). The decision is now sticky and fails closed: `clusterInitializedEvidence` refuses Bootstrap on the Cluster v1beta2 initialization, the Cluster deprecated v1beta1 `ControlPlaneInitialized` condition, the TalosControlPlane's own `status.initialization`/`status.bootstrapped`, any control-plane Machine with a NodeRef, or more than one control-plane Machine; the per-node probe refuses when a node's state cannot be read (only a missing `/var/lib/etcd/member` counts as empty) and treats any etcd member reported by any node as an existing cluster. A fresh single-node cluster still bootstraps.
+* Vendor CABPT v0.9.0-craci.10 (`CABPT_VERSION`): an activated Talos management record follows node lifecycle. After two control planes were reset and rejoined etcd under new member IDs with new boot IDs, every re-observation failed `Talos management activated safety snapshot changed failed` as a reconcile error with growing backoff, and only deleting `<tcp>-management` unlocked it. A fresh verified observation that differs only in node lifecycle (Node UID, boot ID, live configuration, versions), etcd membership or re-verified intent now replaces the activated snapshot, keeping the activation and accepted images, and CABPT logs `re-snapshotting activated Talos management after a node lifecycle change` with the changes. Identity-class changes (authority, Cluster identity and inputs, cluster credentials, member inventory and associations, live-config CAs and discovery identity) stay fail-closed and are named in the error.
+* An activated snapshot that cannot be replaced is now `ActivationReady=False/ActivationInvalid` with that error as its message (management stays fenced) instead of a raw reconcile error, which had left the condition at a stale `True`. When an activated record stops validating, the controller logs `activated Talos management no longer validates; re-observing` with the `stage` (for example `activated workload Node identity changed`); before, that error was dropped and only the downstream observation result was visible.
+* Fix: an `ExtensionConfig` without `spec.namespaceSelector` (CABPT's registrar creates one) was rejected with `has no namespaceSelector`, wedging in-place updates. As in core CAPI, a missing selector now matches every namespace exactly like `{}`; an invalid selector still fails.
+* **Fix: in-place updates never started on a TalosControlPlane without `machineTemplate.spec.deletion`** (`control-plane update CAN-approved snapshot changed failed; intervention required` every reconcile, nothing written). The Machine template sync rendered `nodeDeletionTimeoutSeconds: nil` while core's Machine webhook stores the 10s default, so it patched every Machine on every reconcile and left the in-memory copy (the CAPI patch helper does not read the response back) different from the live Machine that `createOwnerPlan` re-reads. The desired deletion spec now applies the same 10s default, and the error names whether the Machine or the TalosConfig spec differed.
+
+## Unreleased — v0.9.0-craci.9
+
+### Changes
+
+* **Fix: the etcd member audit removed a live member.** `reconcileEtcdMembers` → `auditEtcd` (`controllers/etcd.go`) removes every etcd member whose hostname matches no control-plane Machine; `machineHostName` let a `MachineHostName` status address override the NodeRef name, and CAPH fills that address with the HetznerBareMetalMachine name. A pre-members Machine named `kissanpentu-g8fjk` on the node `tiikerinpentu` therefore matched nothing and its own member was removed through itself (log `found etcd member that doesn't exist as controlplane machine`; the node's etcd then crashloops with `the member has been permanently removed from the cluster`). Matching (`machineHostNames`/`machineIsEtcdMember`, also used by the pre-terminate member lookup) now prefers the NodeRef name — the kubelet registers under the Talos hostname, which is the etcd member name — and keeps the address only as a fallback without a NodeRef; the log line lists the Machines and their names. Note the audit runs on every reconcile before activation and needs every Machine to carry a NodeRef and the TCP to own every control-plane Machine, which is why it fired only after the stray Machine was gone and the second member had joined.
+* Vendor CABPT v0.9.0-craci.9 (`CABPT_VERSION`): observation failures now name the member, the endpoint it was dialed through and the client-side failure (`… actual Talos observation failed: <member> via <address> (tls <serverName>): … connection error: desc = "transport: …"`), which the `ActivationReady=False` message and the `Talos observation not complete` log line (`stage` key) carry verbatim. Note that since craci.8 an observation no longer stops at the first member whose configuration differs (that is drift now), so members that craci.7 never reached are dialed for the first time.
+* Dockerfile build stage: `GOPROXY=https://proxy.golang.org,direct` and `GONOSUMDB=github.com/Polychoronix/*`, so a proxy miss for the vendored CABPT fork falls through to GitHub (go.sum still verifies it; everything else keeps sum.golang.org). The craci.8 release build failed on a 404 proxy.golang.org had cached for CABPT `v0.9.0-craci.8` because that tag was looked up before it was pushed.
+* Release checklist addition: push the CABPT tag first and confirm `curl https://proxy.golang.org/github.com/!polychoronix/cluster-api-bootstrap-provider-talos/@v/<tag>.info` returns it before tagging this provider (a negative lookup is cached by the proxy for a while).
+
+## Unreleased — v0.9.0-craci.8
+
+### Changes
+
+* Vendor CABPT v0.9.0-craci.8 (`CABPT_VERSION`): drift to converge, identity-pinned activation records, stage detail on failures. As with craci.7, the observation runs CABPT's `pkg/updateoperation` in this process, so none of it reaches a TalosControlPlane without this bump.
+* Drift converges. A member whose live configuration matches neither the effective policy nor its own TalosConfig render is activated, not refused; `ActivationReady=True` says `converging in place: <member> drifted in <document ids>` (also `<member> on its current TalosConfig render`). A member whose TalosConfig reports CABPT `ConfigDrift=True` counts as outdated even when its spec already equals the desired render, so `reconcileMachines` offers it to the in-place update, which re-applies the full desired configuration with `ApplyConfiguration` AUTO. Reboot-class deltas (install, volume layout) reboot the node, exactly as any TalosControlPlane spec change does today. `BaselineMismatch` stays a hard block only for identity-class failures (trust CA, role, kubelet/boot witnesses, version, requested-vs-live spec).
+* Pause. A member paused with the standard CAPI `cluster.x-k8s.io/paused` annotation (on the Machine, its TalosConfig or the Cluster, or `Cluster.spec.paused`) is left out of `MachinesNeedingRollout`: no in-place update, no replacement, while it still reports `UpToDate=False` and CABPT keeps reporting its drift. Unpausing converges. Operator flow: `kubectl annotate talosconfig <name> cluster.x-k8s.io/paused=true` before a live edit (CABPT README "Pausing management for a live edit").
+* `ActivationReady=False` messages carry CABPT's stage detail (`ActivationPending` now too); cap raised to 512.
+
+## Unreleased — v0.9.0-craci.7
+
+### Changes
+
+* Vendor CABPT v0.9.0-craci.6. The TalosControlPlane observation (`controllers/management.go` → `op.ObserveManagement`) runs CABPT's `pkg/updateoperation` **in this process**, so CABPT craci.6's activation-policy fix (members overlays) and current-render baseline tolerance only take effect through this dependency; craci.6 of this provider still vendored craci.3 and kept failing `effective input differs from live authority policy`. This release is the real fix for a `members` control plane that cannot (re-)activate.
+* `ActivationReady` reason `BaselineMismatch` for post-dial comparison failures (typed stage error now available); `ConfigDrift` summary uses the typed CABPT condition constant.
+* Release guard: `CABPT_VERSION` names the CABPT release this provider must vendor; `controllers/dependency_test.go` and `make check-cabpt-version` (run by `release-manifests`) fail when go.mod's require/replace differ. Release checklist: set `CABPT_VERSION`, bump go.mod (require + replace), `go mod tidy`, then tag.
+
+## Unreleased — v0.9.0-craci.6
+
+### Changes
+
+* `ConfigDrift` summary condition on the TalosControlPlane, rolled up from the CABPT craci.6 report-only `ConfigDrift` conditions of the owned Machines' TalosConfigs: True names the drifted Machines and their differing documents, False when every observed child reports none, Unknown while none has been observed or an observation is pending. Nothing is applied.
+* Pre-terminate hook (carried over from the craci.5 fixup): serviced before activation, never-joined Machines released immediately, unreachable-peer hold (`MachineDeletionBlocked`/`EtcdPeerUnreachable`) instead of fail-open.
+* Pairs with CABPT craci.6, whose activation policy resolves `spec.controlPlaneConfig.members` overlays (a members control plane could not (re-)activate on craci.5) and accepts the Machine's current TalosConfig render as an activation baseline so in-place updates can converge a node after a policy change.
+
+## Unreleased — v0.9.0-craci.5
+
+### Changes
+
+* Host-pinned control-plane members: `spec.controlPlaneConfig.members` (v1beta1) declares each replica with a DNS-label name, an `infrastructureSelector` merged into the cloned InfrastructureMachine `spec.hostSelector.matchLabels`, and a `talosConfigPatch` overlay (configPatches/strategicPatches/strategicPatchSecretRefs appended, talosEndpoint replaced) resolved through `EffectiveTalosConfigSpec` for every child. Machines are created per member in declared order, named after the member and labelled `controlplane.cluster.x-k8s.io/member`; a deleting Machine keeps its member until gone; scale-down walks members in reverse declared order unless a Machine is marked for deletion. Admission: unique member names, immutable names, `replicas <= len(members)` (stepping 1 -> 2 -> 3 allowed). v1alpha3 round-trips members through the hub stash. Without members behaviour is unchanged.
+* TalosControlPlane `ActivationReady=False` carries the CABPT observation stage name as its message and logs `Talos observation not complete` (keys `taloscontrolplane`, `reason`, `stage`) once per distinct failure. Reason classification (`BaselineMismatch`) follows once `go.mod` selects CABPT `v0.9.0-craci.5`, which exposes the typed stage error.
+* Version-only matched release alongside CABPT `v0.9.0-craci.4` (TalosConfig admission webhook relaxation for input-reference fields). No CACPPT source changes; `go.mod` keeps the published CABPT `v0.9.0-craci.3` module, whose API is unchanged in craci.4, so CI resolves without waiting for the new CABPT tag.
+
+## Unreleased
+
+### Changes
+
+* Select future CABPT `v0.9.0-craci.3`; local paired development uses `go.work`, not a committed local replacement. CABPT publication must precede CACPPT CI/tagging.
+* Propagate default-false `spec.manage` across both served APIs and templates; remove inventory/mode/approval status, UID override lists and imported owner-transfer machinery.
+* Honor runtime-extension namespace selectors and request settings, retaining fail-closed in-place error handling.
+* Support read-only externally managed standard Cluster kubeconfigs without credential rotation or ownership changes.
+* Recover frozen private control-plane owner plans with no-create UID/resourceVersion writes and exact completion receipt consumption; fence concurrent lifecycle and premature status advancement.
+* Report completed control-plane versions from running per-node API-server observations, not desired Machine versions.
+* Couple complete currently owned native CAPI inventory to the same CABPT observer and activation record; require actual Node/Talos boot-ID, kubelet-image, CA/configuration and healthy voting-etcd witnesses. Preserve each native child's own Talos transport during shared policy updates.
+* Support CAPI-born standalone seeds without lineage receipts; accepted image state is private activation state, not bootstrap output. Existing hosts are replaced, never adopted in place.
+* Preserve ordinary native retirement for activated inventory through a separate durable idle-operation guard, exact Machine deletion/hook preconditions and narrowly witnessed Consumed cleanup on deleting authorities; retain strict pause and active/ambiguous holds.
+* Align release packaging with the personal GHCR fork, actual source/revision/tag OCI labels, prerelease classification and generated-manifest component checksums; retain the existing 0.9/v1beta2 metadata contract and one tag publisher.
+* Capture target-specific buildx image metadata and thread its validated published digest through the shared native/Docker renderer; retain tagged references only for local rendering, without claiming image publication or altering provider logic.
+* Skip Talos Bootstrap when the owning Cluster is already control-plane initialized; genuinely fresh inspection and Bootstrap share a 30-second deadline.
+* Preserve native template ownership before activation, default observe-only mutation fencing and UID/RV-safe lifecycle/consumed cleanup. Ceph health remains an operator gate; no live actions or publication are part of this change.
+
 ## [CAPI Control Plane Provider Talos 0.5.13](https://github.com/talos-systems/cluster-api-control-plane-provider-talos/releases/tag/v0.5.13) (2026-04-27)
 
 Welcome to the v0.5.13 release of CAPI Control Plane Provider Talos!

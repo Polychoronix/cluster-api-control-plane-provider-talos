@@ -143,3 +143,14 @@ func TestPreflight_ExcludesTheScaleDownVictim(t *testing.T) {
 	assert.Nil(t, f.r.preflightChecks(context.Background(), f.tcp, f.collection(), victim))
 	assert.NotContains(t, f.dialer.dialed, "cp-1")
 }
+
+func TestPreflight_HoldsUpdatingMachineEvenWhenExcluded(t *testing.T) {
+	tcp := newPreTerminateTCP()
+	victim := newPTMachine(tcp, "cp-1", ptHooked)
+	victim.Annotations[clusterv1.UpdateInProgressAnnotation] = ""
+	f := newPreTerminateFixtureWithTCP(t, tcp, victim, newPTMachine(tcp, "cp-2", ptHooked))
+	failure := f.r.preflightChecks(context.Background(), tcp, f.collection(), victim)
+	require.NotNil(t, failure)
+	assert.Contains(t, failure.message, "waiting for in-place transactions to complete: cp-1")
+	assert.Empty(t, f.dialer.dialed, "no external checks or scale operation before transaction completion")
+}

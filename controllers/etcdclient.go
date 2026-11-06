@@ -29,31 +29,54 @@ type etcdCalls interface {
 	Close() error
 }
 
-// etcdClientFor opens a Talos client scoped to the given machines. Endpoints come from the
-// Machines' status addresses, so nothing here knows about any infrastructure provider.
-func (r *TalosControlPlaneReconciler) etcdClientFor(ctx context.Context, tcp *controlplanev1.TalosControlPlane, machines ...clusterv1.Machine) (etcdCalls, error) {
+// etcdClientFor returns one Machine's client and its explicit target context.
+func (r *TalosControlPlaneReconciler) etcdClientFor(ctx context.Context, tcp *controlplanev1.TalosControlPlane, machine clusterv1.Machine) (etcdCalls, context.Context, error) {
 	if r.etcdDialer != nil {
-		return r.etcdDialer(ctx, tcp, machines...)
+		if _, err := tcp.Spec.EffectiveTalosConfigSpec(&machine); err != nil {
+			return nil, nil, err
+		}
+		c, err := r.etcdDialer(ctx, tcp, machine)
+		return c, ctx, err
 	}
-
-	return r.talosconfigForMachines(ctx, tcp, machines...)
+	return r.talosClientForMachine(ctx, tcp, &machine)
 }
 
-// machineHostName returns the hostname etcd is expected to report for a machine: the NodeRef
-// name, overridden by a MachineHostName status address, cut down from an FQDN.
-func machineHostName(machine *clusterv1.Machine) string {
-	hostname := machine.Status.NodeRef.Name
-
+// machineHostNames returns every name etcd may report for a machine's member, most
+// trustworthy first: the NodeRef name (the kubelet registered under the Talos hostname,
+// which is also the etcd member name), then a MachineHostName status address. The address
+// is a fallback only: infrastructure providers fill it with their own idea of a hostname
+// (CAPH uses the HetznerBareMetalMachine name), and a Machine whose name differs from its
+// node (a pre-members `<cluster>-xxxxx` Machine on a host called `tiikerinpentu`) must
+// never be mistaken for an etcd member without a Machine. FQDNs are cut to the first label.
+func machineHostNames(machine *clusterv1.Machine) []string {
+	var names []string
+	add := func(name string) {
+		name, _, _ = strings.Cut(name, ".")
+		if name == "" {
+			return
+		}
+		for _, existing := range names {
+			if strings.EqualFold(existing, name) {
+				return
+			}
+		}
+		names = append(names, name)
+	}
+	add(machine.Status.NodeRef.Name)
 	for _, address := range machine.Status.Addresses {
 		if address.Type == clusterv1.MachineHostName {
-			hostname = address.Address
-
-			break
+			add(address.Address)
 		}
 	}
+	return names
+}
 
-	// break apart the noderef name in case it's an fqdn (like in AWS)
-	hostname, _, _ = strings.Cut(hostname, ".")
-
-	return hostname
+// machineIsEtcdMember reports whether an etcd member hostname belongs to the machine.
+func machineIsEtcdMember(machine *clusterv1.Machine, memberHostname string) bool {
+	for _, name := range machineHostNames(machine) {
+		if strings.EqualFold(name, memberHostname) {
+			return true
+		}
+	}
+	return false
 }

@@ -92,6 +92,7 @@ func (*TalosControlPlane) ValidateUpdate(_ context.Context, oldObj, newObj *Talo
 		newObj.Spec.MachineTemplate.Spec.InfrastructureRef,
 		field.NewPath("spec", "machineTemplate", "spec", "infrastructureRef"),
 	)
+	allErrs = append(allErrs, validateMembersImmutable(oldObj.Spec.ControlPlaneConfig.Members, newObj.Spec.ControlPlaneConfig.Members, field.NewPath("spec", "controlPlaneConfig", "members"))...)
 	allErrs = append(allErrs, newObj.validate()...)
 
 	return nil, newObj.toErr(allErrs)
@@ -130,6 +131,8 @@ func (r *TalosControlPlane) validate() field.ErrorList {
 	allErrs = append(allErrs, validateMachineNamingStrategy(r.Spec.MachineNamingStrategy, field.NewPath("spec", "machineNamingStrategy"))...)
 	allErrs = append(allErrs, validateRolloutStrategy(r.Spec.RolloutStrategy, field.NewPath("spec", "rolloutStrategy"))...)
 	allErrs = append(allErrs, validateControlPlaneConfig(&r.Spec.ControlPlaneConfig, field.NewPath("spec", "controlPlaneConfig"))...)
+	allErrs = append(allErrs, validateKubeconfig(r.Spec.Kubeconfig, field.NewPath("spec", "kubeconfig"))...)
+	allErrs = append(allErrs, validateReplicasAgainstMembers(r.Spec.Replicas, r.Spec.ControlPlaneConfig.Members, field.NewPath("spec", "replicas"))...)
 
 	return allErrs
 }
@@ -141,8 +144,72 @@ func validateControlPlaneConfig(cfg *ControlPlaneConfig, fldPath *field.Path) fi
 	var allErrs field.ErrorList
 
 	allErrs = append(allErrs, cabptv1.ValidateImageFactory(fldPath.Child("controlplane", "imageFactory"), cfg.ControlPlaneConfig.ImageFactory)...)
+	allErrs = append(allErrs, cabptv1.ValidateConfigInputs(fldPath.Child("controlplane"), cfg.ControlPlaneConfig)...)
+	if cfg.ControlPlaneConfig.Manage {
+		allErrs = append(allErrs, field.Forbidden(fldPath.Child("controlplane", "manage"), "consent belongs to TalosControlPlane.spec.manage"))
+	}
+	allErrs = append(allErrs, validateMembers(cfg.Members, fldPath.Child("members"))...)
 
 	return allErrs
+}
+
+// validateMembers requires unique DNS-label member names and well-formed overlays; the
+// per-member Talos inputs are validated with the bootstrap provider's own rules so a bad
+// patch is rejected at admission rather than on every generated child.
+func validateMembers(members []ControlPlaneMember, fldPath *field.Path) field.ErrorList {
+	var allErrs field.ErrorList
+
+	seen := map[string]int{}
+	for i, member := range members {
+		path := fldPath.Index(i)
+		for _, msg := range validation.IsDNS1123Label(member.Name) {
+			allErrs = append(allErrs, field.Invalid(path.Child("name"), member.Name, msg))
+		}
+		if previous, duplicate := seen[member.Name]; duplicate {
+			allErrs = append(allErrs, field.Duplicate(path.Child("name"), fmt.Sprintf("%s (also at index %d)", member.Name, previous)))
+		}
+		seen[member.Name] = i
+		if member.TalosConfigPatch == nil {
+			continue
+		}
+		overlay := cabptv1.TalosConfigSpec{
+			ConfigPatches:            member.TalosConfigPatch.ConfigPatches,
+			StrategicPatches:         member.TalosConfigPatch.StrategicPatches,
+			StrategicPatchSecretRefs: member.TalosConfigPatch.StrategicPatchSecretRefs,
+			TalosEndpoint:            member.TalosConfigPatch.TalosEndpoint,
+		}
+		allErrs = append(allErrs, cabptv1.ValidateConfigInputs(path.Child("talosConfigPatch"), overlay)...)
+	}
+
+	return allErrs
+}
+
+// validateMembersImmutable keeps declared member names stable: a member is a host pin, and
+// renaming one would orphan the Machine created for it. Overlays and selectors may change.
+func validateMembersImmutable(oldMembers, newMembers []ControlPlaneMember, fldPath *field.Path) field.ErrorList {
+	var allErrs field.ErrorList
+
+	current := map[string]bool{}
+	for _, member := range newMembers {
+		current[member.Name] = true
+	}
+	for i, member := range oldMembers {
+		if !current[member.Name] {
+			allErrs = append(allErrs, field.Forbidden(fldPath.Index(i).Child("name"), fmt.Sprintf("member %q cannot be removed or renamed; scale down and delete its Machine first", member.Name)))
+		}
+	}
+
+	return allErrs
+}
+
+// validateReplicasAgainstMembers allows stepping replicas up one member at a time but never
+// past the declared membership.
+func validateReplicasAgainstMembers(replicas *int32, members []ControlPlaneMember, fldPath *field.Path) field.ErrorList {
+	if len(members) == 0 || replicas == nil || int(*replicas) <= len(members) {
+		return nil
+	}
+
+	return field.ErrorList{field.Invalid(fldPath, *replicas, fmt.Sprintf("cannot exceed the %d declared control-plane members", len(members)))}
 }
 
 func validateInfrastructureRef(ref clusterv1.ContractVersionedObjectReference, fldPath *field.Path) field.ErrorList {
@@ -251,4 +318,13 @@ func newInvalidTalosControlPlaneError(kind, name string, allErrs field.ErrorList
 		name,
 		allErrs,
 	)
+}
+
+func validateKubeconfig(config KubeconfigSpec, path *field.Path) field.ErrorList {
+	switch config.Mode {
+	case "", KubeconfigModeManaged, KubeconfigModeExternal:
+		return nil
+	default:
+		return field.ErrorList{field.NotSupported(path.Child("mode"), config.Mode, []string{"Managed", "External"})}
+	}
 }

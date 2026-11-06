@@ -116,6 +116,17 @@ func TestTalosControlPlaneRoundTripPreservesImageFactory(t *testing.T) {
 	require.Equal(t, hub.Spec.ControlPlaneConfig.ControlPlaneConfig.ImageFactory, restored.Spec.ControlPlaneConfig.ControlPlaneConfig.ImageFactory)
 }
 
+func TestSharedInputsRoundTrip(t *testing.T) {
+	hub := &cpv1beta1.TalosControlPlane{ObjectMeta: metav1.ObjectMeta{Name: "cp", Namespace: "tenant"}, Spec: cpv1beta1.TalosControlPlaneSpec{Manage: true, ControlPlaneConfig: cpv1beta1.ControlPlaneConfig{ControlPlaneConfig: cabptv1beta1.TalosConfigSpec{GenerateType: "controlplane", ConfigSecretRef: &cabptv1beta1.SecretKeyReference{Name: "shared-base", Key: "value"}, ConfigRevision: "shared-2", StrategicPatchSecretRefs: []cabptv1beta1.SecretKeyReference{{Name: "first", Key: "patch"}, {Name: "second", Key: "patch"}}}}}}
+	spoke := &TalosControlPlane{}
+	require.NoError(t, spoke.ConvertFrom(hub))
+	delete(spoke.Annotations, utilconversion.DataAnnotation)
+	restored := &cpv1beta1.TalosControlPlane{}
+	require.NoError(t, spoke.ConvertTo(restored))
+	require.Equal(t, hub.Spec.ControlPlaneConfig, restored.Spec.ControlPlaneConfig)
+	require.True(t, restored.Spec.Manage)
+}
+
 // v1alpha3 still carries `init`; the hub does not, so it is dropped on the way up and restored
 // from the stash on the way back down.
 func TestInitConfigDoesNotReachTheHub(t *testing.T) {
@@ -166,4 +177,66 @@ func TestControlPlaneStatusConvertFromDerivesTheLegacyFields(t *testing.T) {
 	require.EqualValues(t, 1, spoke.Status.UnavailableReplicas)
 	require.Nil(t, spoke.Status.FailureReason)
 	require.Equal(t, Conditions{{Type: "Available", Status: corev1.ConditionTrue, Reason: "Available", LastTransitionTime: transition}}, spoke.Status.Conditions)
+}
+
+func TestExternalKubeconfigSpecRoundTrip(t *testing.T) {
+	for _, mode := range []cpv1beta1.KubeconfigMode{"", cpv1beta1.KubeconfigModeManaged, cpv1beta1.KubeconfigModeExternal} {
+		hub := &cpv1beta1.TalosControlPlane{Spec: cpv1beta1.TalosControlPlaneSpec{Kubeconfig: cpv1beta1.KubeconfigSpec{Mode: mode}}}
+		spoke := &TalosControlPlane{}
+		require.NoError(t, spoke.ConvertFrom(hub))
+		require.Equal(t, string(mode), string(spoke.Spec.Kubeconfig.Mode))
+		back := &cpv1beta1.TalosControlPlane{}
+		require.NoError(t, spoke.ConvertTo(back))
+		require.Equal(t, hub.Spec.Kubeconfig, back.Spec.Kubeconfig)
+	}
+}
+
+func TestBooleanConsentRoundTripAndDeepCopy(t *testing.T) {
+	hub := &cpv1beta1.TalosControlPlane{Spec: cpv1beta1.TalosControlPlaneSpec{Manage: true}}
+	for _, stash := range []bool{true, false} {
+		spoke := &TalosControlPlane{}
+		require.NoError(t, spoke.ConvertFrom(hub))
+		if !stash {
+			delete(spoke.Annotations, utilconversion.DataAnnotation)
+		}
+		spoke.Spec.Manage = false
+		back := &cpv1beta1.TalosControlPlane{}
+		require.NoError(t, spoke.ConvertTo(back))
+		require.False(t, back.Spec.Manage)
+	}
+	copy := hub.DeepCopy()
+	copy.Spec.Manage = false
+	require.True(t, hub.Spec.Manage)
+}
+
+// Members are hub-only; a round trip through v1alpha3 must carry them in the stash.
+func TestTalosControlPlaneRoundTripPreservesMembers(t *testing.T) {
+	t.Parallel()
+
+	hub := &cpv1beta1.TalosControlPlane{
+		ObjectMeta: metav1.ObjectMeta{Name: "cp", Namespace: "default"},
+		Spec: cpv1beta1.TalosControlPlaneSpec{
+			Version: "v1.35.0",
+			ControlPlaneConfig: cpv1beta1.ControlPlaneConfig{
+				ControlPlaneConfig: cabptv1beta1.TalosConfigSpec{GenerateType: "controlplane", TalosVersion: "v1.14"},
+				Members: []cpv1beta1.ControlPlaneMember{{
+					Name:                   "leijonanpentu",
+					InfrastructureSelector: map[string]string{"caph.craci.dev/node": "leijonanpentu"},
+					TalosConfigPatch: &cpv1beta1.ControlPlaneMemberPatch{
+						StrategicPatches:         []string{"{}"},
+						StrategicPatchSecretRefs: []cabptv1beta1.SecretKeyReference{{Name: "leijonanpentu-tailscale", Key: "patch"}},
+						TalosEndpoint:            &cabptv1beta1.TalosEndpoint{Address: "leijonanpentu-talos-access:50000", ServerName: "leijonanpentu.example"},
+					},
+				}},
+			},
+		},
+	}
+
+	spoke := &TalosControlPlane{}
+	require.NoError(t, spoke.ConvertFrom(hub))
+	require.Contains(t, spoke.Annotations, utilconversion.DataAnnotation)
+
+	restored := &cpv1beta1.TalosControlPlane{}
+	require.NoError(t, spoke.ConvertTo(restored))
+	require.Equal(t, hub.Spec.ControlPlaneConfig.Members, restored.Spec.ControlPlaneConfig.Members)
 }

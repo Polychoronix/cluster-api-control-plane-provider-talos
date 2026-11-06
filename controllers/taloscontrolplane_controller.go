@@ -11,7 +11,6 @@ import (
 	"io"
 	"math/rand"
 	"reflect"
-	"sort"
 	"strings"
 	"time"
 
@@ -28,7 +27,9 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/selection"
+	"k8s.io/apimachinery/pkg/types"
 	kerrors "k8s.io/apimachinery/pkg/util/errors"
 	"k8s.io/apimachinery/pkg/util/validation"
 	"k8s.io/client-go/tools/events"
@@ -74,7 +75,7 @@ type TalosControlPlaneReconciler struct {
 	EtcdCleanupTimeout time.Duration
 
 	// etcdDialer overrides how Talos clients are opened for etcd operations. Nil in production,
-	// where talosconfigForMachines is used; tests set it to inject a fake.
+	// where talosClientForMachine is used; tests set it to inject a fake.
 	etcdDialer func(ctx context.Context, tcp *controlplanev1.TalosControlPlane, machines ...clusterv1.Machine) (etcdCalls, error)
 }
 
@@ -91,8 +92,9 @@ func (r *TalosControlPlaneReconciler) SetupWithManager(mgr ctrl.Manager, options
 }
 
 // +kubebuilder:rbac:groups=runtime.cluster.x-k8s.io,resources=extensionconfigs,verbs=get;list;watch
+// +kubebuilder:rbac:groups=core,resources=namespaces,verbs=get
 // +kubebuilder:rbac:groups=core,resources=events,verbs=get;list;watch;create;patch
-// +kubebuilder:rbac:groups=core,resources=secrets,verbs=get;list;watch;create;patch;update
+// +kubebuilder:rbac:groups=core,resources=secrets,verbs=get;list;watch;create;patch;update;delete
 // +kubebuilder:rbac:groups=core,resources=configmaps,namespace=kube-system,verbs=get;list;watch;create
 // +kubebuilder:rbac:groups=rbac,resources=roles,namespace=kube-system,verbs=get;list;watch;create
 // +kubebuilder:rbac:groups=rbac,resources=rolebindings,namespace=kube-system,verbs=get;list;watch;create
@@ -113,8 +115,27 @@ func (r *TalosControlPlaneReconciler) Reconcile(ctx context.Context, req ctrl.Re
 		return ctrl.Result{RequeueAfter: 20 * time.Second}, nil
 	}
 
-	// Fetch the Cluster.
-	cluster, err := util.GetOwnerCluster(ctx, r.Client, tcp.ObjectMeta)
+	// The uncached Cluster controls pauses and the aggregate authority identity.
+	var cluster *clusterv1.Cluster
+	var err error
+	for _, ref := range tcp.OwnerReferences {
+		if ref.Kind != "Cluster" {
+			continue
+		}
+		gv, parseErr := schema.ParseGroupVersion(ref.APIVersion)
+		if parseErr != nil {
+			return ctrl.Result{}, fmt.Errorf("invalid owner Cluster reference")
+		}
+		if gv.Group != clusterv1.GroupVersion.Group {
+			continue
+		}
+		cluster = &clusterv1.Cluster{}
+		err = r.APIReader.Get(ctx, client.ObjectKey{Namespace: tcp.Namespace, Name: ref.Name}, cluster)
+		if err == nil && cluster.UID != ref.UID {
+			return ctrl.Result{}, fmt.Errorf("owner Cluster identity changed")
+		}
+		break
+	}
 	if err != nil {
 		if !apierrors.IsNotFound(err) {
 			logger.Error(err, "failed to retrieve owner Cluster from the API Server")
@@ -133,14 +154,26 @@ func (r *TalosControlPlaneReconciler) Reconcile(ctx context.Context, req ctrl.Re
 
 	if annotations.IsPaused(cluster, tcp) {
 		logger.Info("reconciliation is paused for this object")
-		return ctrl.Result{RequeueAfter: 20 * time.Second}, nil
+		return ctrl.Result{RequeueAfter: 20 * time.Second}, r.patchManagementPaused(ctx, tcp)
+	}
+
+	if handled, result, err := r.reconcileManagement(ctx, tcp, cluster); handled || err != nil {
+		return result, err
+	}
+	if conditions.IsTrue(tcp, clusterv1.PausedCondition) {
+		helper, err := patch.NewHelper(tcp, r.Client)
+		if err != nil {
+			return ctrl.Result{}, err
+		}
+		conditions.Set(tcp, metav1.Condition{Type: clusterv1.PausedCondition, Status: metav1.ConditionFalse, Reason: "NotPaused"})
+		return ctrl.Result{RequeueAfter: requeueDuration}, helper.Patch(ctx, tcp, patch.WithOwnedConditions{Conditions: []string{clusterv1.PausedCondition}})
 	}
 
 	// Wait for the cluster infrastructure to be provisioned before creating machines.
 	// The set-once initialization field is used instead of the InfrastructureReady
 	// condition, as the condition can go back to false during the cluster lifecycle
 	// and would deadlock the control plane bootstrap.
-	if !ptr.Deref(cluster.Status.Initialization.InfrastructureProvisioned, false) {
+	if tcp.DeletionTimestamp.IsZero() && !ptr.Deref(cluster.Status.Initialization.InfrastructureProvisioned, false) {
 		logger.Info("cluster infra not provisioned")
 
 		return ctrl.Result{RequeueAfter: 20 * time.Second}, nil
@@ -154,7 +187,7 @@ func (r *TalosControlPlaneReconciler) Reconcile(ctx context.Context, req ctrl.Re
 	}
 
 	// Add finalizer first if not exist to avoid the race condition between init and delete
-	if ensureTalosControlPlaneFinalizers(tcp) {
+	if tcp.DeletionTimestamp.IsZero() && ensureTalosControlPlaneFinalizers(tcp) {
 
 		// patch and return right away instead of reusing the main defer,
 		// because the main defer may take too much time to get cluster status
@@ -165,6 +198,14 @@ func (r *TalosControlPlaneReconciler) Reconcile(ctx context.Context, req ctrl.Re
 		}
 
 		return ctrl.Result{}, nil
+	}
+	if tcp.DeletionTimestamp.IsZero() && !ptr.Deref(cluster.Status.Initialization.InfrastructureProvisioned, false) {
+		return ctrl.Result{RequeueAfter: requeueDuration}, nil
+	}
+	if !tcp.DeletionTimestamp.IsZero() {
+		// Retirement has separate durable authority/idle-operation validation.
+		// Finalizer removal may delete TCP immediately, so never defer status writes.
+		return r.reconcileDelete(ctx, cluster, tcp)
 	}
 
 	defer func() {
@@ -195,9 +236,23 @@ func (r *TalosControlPlaneReconciler) Reconcile(ctx context.Context, req ctrl.Re
 		logger.Info("successfully updated control plane status")
 	}()
 
-	if !tcp.ObjectMeta.DeletionTimestamp.IsZero() {
-		// Handle deletion reconciliation loop.
-		return r.reconcileDelete(ctx, cluster, tcp)
+	secret, plan, err := r.readOwnerPlan(ctx, tcp)
+	if err != nil {
+		return ctrl.Result{RequeueAfter: requeueDuration}, err
+	}
+	if plan != nil {
+		held, err := r.resumeOwnerPlan(ctx, tcp, cluster, secret, plan)
+		if held || err != nil {
+			// Only actual read-only health observations are allowed during owner
+			// recovery; no preterminate, audit, bootstrap or lifecycle phase runs.
+			if machines, readErr := r.getControlPlaneMachinesForTCP(ctx, util.ObjectKey(cluster), tcp); readErr == nil && tcp.DeletionTimestamp.IsZero() {
+				_, _ = r.reconcileNodeHealth(ctx, cluster, tcp, &machines)
+			}
+			return ctrl.Result{RequeueAfter: requeueDuration}, err
+		}
+	}
+	if held, err := r.ownerUpdateHeld(ctx, tcp); held {
+		return ctrl.Result{RequeueAfter: requeueDuration}, err
 	}
 
 	return r.reconcile(ctx, cluster, tcp)
@@ -207,12 +262,24 @@ func (r *TalosControlPlaneReconciler) reconcile(ctx context.Context, cluster *cl
 	logger := ctrl.LoggerFrom(ctx, "cluster", cluster.Name)
 	logger.Info("reconcile TalosControlPlane")
 
-	// TODO: handle proper adoption of Machines
-	ownedMachines, err := r.getControlPlaneMachinesForCluster(ctx, util.ObjectKey(cluster))
+	ownedMachines, err := r.getControlPlaneMachinesForTCP(ctx, util.ObjectKey(cluster), tcp)
 	if err != nil {
 		logger.Error(err, "failed to retrieve control plane machines for cluster")
 
 		return ctrl.Result{}, err
+	}
+	if !conditions.IsTrue(tcp, cabptv1.ActivationReadyCondition) {
+		// A Machine deleted before activation (a node that never registered, an operator
+		// retry) still carries the pre-terminate hook; it must be serviced here or the
+		// deletion parks forever, since nothing below this branch would ever run for it.
+		if _, hookErr := r.reconcileMachinePreTerminateHooks(ctx, cluster, tcp, &ownedMachines); hookErr != nil {
+			logger.Error(hookErr, "failed to reconcile machine pre-terminate hooks")
+		}
+		// Native template ownership is required even before node activation.
+		if err := r.reconcileExternalReference(ctx, tcp.Spec.MachineTemplate.Spec.InfrastructureRef, cluster); err != nil {
+			return ctrl.Result{}, err
+		}
+		return r.reconcileInitialProvisioning(ctx, cluster, tcp, &ownedMachines)
 	}
 
 	// Machine deletion hooks are serviced before anything else in this reconcile. A Machine held
@@ -307,7 +374,7 @@ func (r *TalosControlPlaneReconciler) ClusterToTalosControlPlane(_ context.Conte
 
 func (r *TalosControlPlaneReconciler) reconcileDelete(ctx context.Context, cluster *clusterv1.Cluster, tcp *controlplanev1.TalosControlPlane) (ctrl.Result, error) {
 	// Get list of all control plane machines
-	ownedMachines, err := r.getControlPlaneMachinesForCluster(ctx, util.ObjectKey(cluster))
+	ownedMachines, err := r.getControlPlaneMachinesForTCP(ctx, util.ObjectKey(cluster), tcp)
 	if err != nil {
 		r.Log.Error(err, "failed to retrieve control plane machines for cluster")
 
@@ -338,7 +405,7 @@ func (r *TalosControlPlaneReconciler) reconcileDelete(ctx context.Context, clust
 			continue
 		}
 		// Submit deletion request
-		if err := r.Client.Delete(ctx, ownedMachine); err != nil && !apierrors.IsNotFound(err) {
+		if err := r.Client.Delete(ctx, ownedMachine, client.Preconditions{UID: &ownedMachine.UID, ResourceVersion: &ownedMachine.ResourceVersion}); err != nil && !apierrors.IsNotFound(err) {
 			r.Log.Error(err, "failed to cleanup owned machine")
 			return ctrl.Result{}, err
 		}
@@ -353,14 +420,18 @@ func (r *TalosControlPlaneReconciler) reconcileDelete(ctx context.Context, clust
 	return ctrl.Result{RequeueAfter: requeueDuration}, nil
 }
 
-func (r *TalosControlPlaneReconciler) getControlPlaneMachinesForCluster(ctx context.Context, cluster client.ObjectKey) (clusterv1.MachineList, error) {
+// listControlPlaneMachinesForCluster is read-only inventory, not lifecycle consent.
+func (r *TalosControlPlaneReconciler) listControlPlaneMachinesForCluster(ctx context.Context, cluster client.ObjectKey) (clusterv1.MachineList, error) {
 	selector := map[string]string{
 		clusterv1.ClusterNameLabel:         cluster.Name,
 		clusterv1.MachineControlPlaneLabel: "",
 	}
 
 	machineList := clusterv1.MachineList{}
-	if err := r.Client.List(
+	if r.APIReader == nil {
+		return machineList, fmt.Errorf("APIReader is required for control-plane inventory")
+	}
+	if err := r.APIReader.List(
 		ctx,
 		&machineList,
 		client.InNamespace(cluster.Namespace),
@@ -370,6 +441,36 @@ func (r *TalosControlPlaneReconciler) getControlPlaneMachinesForCluster(ctx cont
 	}
 
 	return machineList, nil
+}
+
+// getControlPlaneMachinesForTCP only returns Machines whose controller identity
+// belongs to this exact TCP. Labels and cache presence never authorize foreign Machines.
+func (r *TalosControlPlaneReconciler) getControlPlaneMachinesForTCP(ctx context.Context, cluster client.ObjectKey, tcp *controlplanev1.TalosControlPlane) (clusterv1.MachineList, error) {
+	list, err := r.listControlPlaneMachinesForCluster(ctx, cluster)
+	if err != nil {
+		return list, err
+	}
+	owned := list.Items[:0]
+	for i := range list.Items {
+		machine := &list.Items[i]
+		if machineIsControlledByTCP(machine, tcp) {
+			owned = append(owned, *machine)
+		}
+	}
+	list.Items = owned
+	return list, nil
+}
+
+func machineIsControlledByTCP(machine *clusterv1.Machine, tcp *controlplanev1.TalosControlPlane) bool {
+	if machine == nil || tcp == nil || tcp.UID == "" || machine.Namespace != tcp.Namespace {
+		return false
+	}
+	owner := metav1.GetControllerOf(machine)
+	if owner == nil || owner.Kind != "TalosControlPlane" || owner.Name != tcp.Name || owner.UID != tcp.UID {
+		return false
+	}
+	gv, err := schema.ParseGroupVersion(owner.APIVersion)
+	return err == nil && gv.Group == controlplanev1.GroupVersion.Group
 }
 
 func ensureTalosControlPlaneFinalizers(tcp *controlplanev1.TalosControlPlane) bool {
@@ -416,15 +517,52 @@ func (r *TalosControlPlaneReconciler) bootControlPlane(ctx context.Context, clus
 		UID:        tcp.UID,
 	}
 
-	machineName, err := tcp.Spec.GenerateMachineName(cluster.Name, tcp.Name)
-	if err != nil {
-		conditions.Set(tcp, metav1.Condition{
-			Type:    string(controlplanev1.MachinesCreatedCondition),
-			Status:  metav1.ConditionFalse,
-			Reason:  controlplanev1.MachineGenerationFailedReason,
-			Message: fmt.Sprintf("Failed to generate machine name: %v", err),
-		})
+	// Declared members pin Machines to hosts: the next free member names the Machine, labels
+	// it and selects its host. Without members the naming strategy generates the name.
+	var member *controlplanev1.ControlPlaneMember
+	if len(tcp.Spec.ControlPlaneConfig.Members) > 0 {
+		owned, err := r.getControlPlaneMachinesForTCP(ctx, client.ObjectKeyFromObject(cluster), tcp)
+		if err != nil {
+			return ctrl.Result{}, err
+		}
+		member, err = nextFreeMember(tcp, owned.Items)
+		if err != nil {
+			conditions.Set(tcp, metav1.Condition{
+				Type:    string(controlplanev1.MachinesCreatedCondition),
+				Status:  metav1.ConditionFalse,
+				Reason:  controlplanev1.MachineGenerationFailedReason,
+				Message: err.Error(),
+			})
 
+			return ctrl.Result{RequeueAfter: 20 * time.Second}, nil
+		}
+	}
+
+	var machineName string
+	if member != nil {
+		machineName = member.Name
+	} else {
+		generated, err := tcp.Spec.GenerateMachineName(cluster.Name, tcp.Name)
+		if err != nil {
+			conditions.Set(tcp, metav1.Condition{
+				Type:    string(controlplanev1.MachinesCreatedCondition),
+				Status:  metav1.ConditionFalse,
+				Reason:  controlplanev1.MachineGenerationFailedReason,
+				Message: fmt.Sprintf("Failed to generate machine name: %v", err),
+			})
+
+			return ctrl.Result{}, err
+		}
+		machineName = generated
+	}
+
+	machineLabels := controlPlaneMachineLabelsForCluster(tcp, cluster.Name)
+	if member != nil {
+		machineLabels[controlplanev1.MemberLabel] = member.Name
+	}
+
+	bootstrapConfig, err := tcp.Spec.EffectiveTalosConfigSpec(&clusterv1.Machine{ObjectMeta: metav1.ObjectMeta{Name: machineName, Namespace: tcp.Namespace, Labels: machineLabels}})
+	if err != nil {
 		return ctrl.Result{}, err
 	}
 
@@ -455,17 +593,25 @@ func (r *TalosControlPlaneReconciler) bootControlPlane(ctx context.Context, clus
 		Name:       templateObj.GetName(),
 		Namespace:  templateObj.GetNamespace(),
 	}
-	_, infraRef, err := external.CreateFromTemplate(ctx, &external.CreateFromTemplateInput{
-		Client:      r.Client,
+	infraLabels := map[string]string{clusterv1.MachineControlPlaneLabel: ""}
+	if member != nil {
+		infraLabels[controlplanev1.MemberLabel] = member.Name
+	}
+	infraObj, err := external.GenerateTemplate(&external.GenerateTemplateInput{
+		Template:    templateObj,
 		TemplateRef: &templateRef,
 		Namespace:   tcp.Namespace,
 		Name:        machineName,
 		OwnerRef:    infraCloneOwner,
 		ClusterName: cluster.Name,
-		Labels: map[string]string{
-			clusterv1.MachineControlPlaneLabel: "",
-		},
+		Labels:      infraLabels,
 	})
+	if err == nil {
+		err = applyMemberHostSelector(infraObj, member)
+	}
+	if err == nil {
+		err = r.Client.Create(ctx, infraObj)
+	}
 	if err != nil {
 		conditions.Set(tcp, metav1.Condition{
 			Type:    string(controlplanev1.MachinesCreatedCondition),
@@ -476,8 +622,11 @@ func (r *TalosControlPlaneReconciler) bootControlPlane(ctx context.Context, clus
 
 		return ctrl.Result{}, err
 	}
-
-	bootstrapConfig := &tcp.Spec.ControlPlaneConfig.ControlPlaneConfig
+	infraRef := clusterv1.ContractVersionedObjectReference{
+		APIGroup: infraObj.GroupVersionKind().Group,
+		Kind:     infraObj.GetKind(),
+		Name:     infraObj.GetName(),
+	}
 
 	// Clone the bootstrap configuration
 	bootstrapRef, err := r.generateTalosConfig(ctx, tcp, machineName, bootstrapConfig)
@@ -496,7 +645,7 @@ func (r *TalosControlPlaneReconciler) bootControlPlane(ctx context.Context, clus
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      machineName,
 			Namespace: tcp.Namespace,
-			Labels:    controlPlaneMachineLabelsForCluster(tcp, cluster.Name),
+			Labels:    machineLabels,
 			// Carries the pre-terminate etcd cleanup hook, so the Machine is protected from
 			// the moment it exists rather than from the next reconcile.
 			Annotations: r.desiredMachineAnnotations(tcp),
@@ -535,87 +684,137 @@ func (r *TalosControlPlaneReconciler) bootControlPlane(ctx context.Context, clus
 	return ctrl.Result{RequeueAfter: 20 * time.Second}, nil
 }
 
-func (r *TalosControlPlaneReconciler) bootstrapCluster(ctx context.Context, tcp *controlplanev1.TalosControlPlane, machines []clusterv1.Machine) error {
-	ctx, cancel := context.WithTimeout(ctx, time.Second*5)
-
+func (r *TalosControlPlaneReconciler) bootstrapCluster(ctx context.Context, cluster *clusterv1.Cluster, tcp *controlplanev1.TalosControlPlane, machines []clusterv1.Machine) error {
+	// Talos Bootstrap creates a NEW etcd cluster on an empty data directory. Issued against
+	// a control plane that already exists it forms a second, empty cluster behind the same
+	// endpoint (seen live: a member whose data directory had just been wiped for a rejoin
+	// became leader of an empty cluster and the next joiner followed it). The decision is
+	// therefore sticky and fails closed: any evidence that the cluster was ever initialized
+	// settles it forever, and a probe that cannot prove every node empty refuses.
+	if reason := clusterInitializedEvidence(cluster, tcp, machines); reason != "" {
+		if !tcp.Status.Bootstrapped {
+			r.Log.Info("owning Cluster is already initialized; skipping Talos Bootstrap", "evidence", reason)
+		}
+		tcp.Status.Bootstrapped = true
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 
-	c, err := r.talosconfigForMachines(ctx, tcp, machines...)
-	if err != nil {
-		return err
+	if len(machines) == 0 {
+		return fmt.Errorf("no Machines to use for bootstrap")
 	}
-
-	defer c.Close() //nolint:errcheck
-
-	addresses := []string{}
-	for _, machine := range machines {
-		found := false
-
-		// Prefer finding an InternalIP address for the machine first.
-		for _, addr := range machine.Status.Addresses {
-			if addr.Type == clusterv1.MachineInternalIP {
-				addresses = append(addresses, addr.Address)
-
-				found = true
-
-				break
-			}
-		}
-
-		if found {
-			continue
-		}
-
-		// Fallback to finding an ExternalIP address for the machine
-		// if no InternalIP is found.
-		for _, addr := range machine.Status.Addresses {
-			if addr.Type == clusterv1.MachineExternalIP {
-				addresses = append(addresses, addr.Address)
-
-				found = true
-
-				break
-			}
-		}
-
-		if !found {
-			return fmt.Errorf("machine %q doesn't have an any InternalIP or ExternalIP address yet", machine.Name)
+	selected := &machines[0]
+	for i := range machines {
+		if machines[i].Name < selected.Name {
+			selected = &machines[i]
 		}
 	}
-
-	if len(addresses) == 0 {
-		return fmt.Errorf("no machine addresses to use for bootstrap")
-	}
-
-	// If the etcd data directory exists on at least one node the cluster was already
-	// bootstrapped. Each node is asked on its own: Talos deprecated server-side fan-out, so a
-	// node that cannot answer surfaces as an error for that node rather than as a per-message
-	// status, and is treated the same way (as not bootstrapped there).
-	for _, address := range addresses {
-		bootstrapped, err := hasEtcdData(talosclient.WithNode(ctx, address), c)
+	var bootstrapClient *talosclient.Client
+	var bootstrapCtx context.Context
+	defer func() {
+		if bootstrapClient != nil {
+			bootstrapClient.Close() //nolint:errcheck
+		}
+	}()
+	for i := range machines {
+		machine := &machines[i]
+		c, rpcCtx, err := r.talosClientForMachine(ctx, tcp, machine)
 		if err != nil {
-			r.Log.Info("could not check for etcd data on node", "address", address, "error", err.Error())
-
-			continue
+			return fmt.Errorf("cannot prove %q has no etcd state, refusing Talos Bootstrap: %w", machine.Name, err)
 		}
-
-		if bootstrapped {
+		bootstrapped, dataErr := hasEtcdData(rpcCtx, c)
+		members, memberErr := hasEtcdMembers(rpcCtx, c)
+		if machine == selected {
+			bootstrapClient, bootstrapCtx = c, rpcCtx
+		} else {
+			c.Close() //nolint:errcheck
+		}
+		if bootstrapped || members {
+			r.Log.Info("etcd state found on a control-plane node; the cluster is initialized, never issuing Talos Bootstrap", "machine", machine.Name, "data", bootstrapped, "members", members)
+			tcp.Status.Bootstrapped = true
 			return nil
 		}
-	}
-
-	sort.Strings(addresses)
-
-	if err := c.Bootstrap(talosclient.WithNode(ctx, addresses[0]), &machineapi.BootstrapRequest{}); err != nil {
-		if status.Code(err) != codes.AlreadyExists {
-			return err
+		// A missing /var/lib/etcd/member is the empty-node answer; anything else (transport,
+		// permission, timeout) leaves the node's state unknown and the bootstrap refused.
+		if dataErr != nil && !isMissingPath(dataErr) {
+			return fmt.Errorf("cannot prove %q has no etcd data, refusing Talos Bootstrap: %w", machine.Name, dataErr)
 		}
+		// etcd not answering is the normal state of an empty node, so a member-list error
+		// is not evidence either way; it is logged for the operator.
+		if memberErr != nil {
+			r.Log.V(1).Info("etcd member list unavailable on node", "machine", machine.Name, "error", memberErr.Error())
+		}
+	}
+	if err := bootstrapClient.Bootstrap(bootstrapCtx, &machineapi.BootstrapRequest{}); err != nil && status.Code(err) != codes.AlreadyExists {
+		return err
 	}
 
 	return nil
 }
 
-// hasEtcdData reports whether the node the context addresses has an etcd data directory.
+// clusterInitializedEvidence names the first sticky proof that the workload control plane
+// has existed, or "" when there is none: the Cluster's v1beta2 initialization and its
+// deprecated v1beta1 ControlPlaneInitialized condition (core CAPI never resets either),
+// this TalosControlPlane's own initialization/bootstrapped status, a control-plane
+// Machine that holds a NodeRef (a kubelet registered, so an API server and etcd served),
+// and more than one control-plane Machine (the second is only ever created after the
+// first was bootstrapped).
+func clusterInitializedEvidence(cluster *clusterv1.Cluster, tcp *controlplanev1.TalosControlPlane, machines []clusterv1.Machine) string {
+	switch {
+	case ptr.Deref(cluster.Status.Initialization.ControlPlaneInitialized, false):
+		return "Cluster status.initialization.controlPlaneInitialized"
+	case conditions.IsTrue(cluster, "ControlPlaneInitialized"):
+		return "Cluster condition ControlPlaneInitialized"
+	case cluster.Status.Deprecated != nil && cluster.Status.Deprecated.V1Beta1 != nil && v1beta1ConditionTrue(cluster.Status.Deprecated.V1Beta1.Conditions, "ControlPlaneInitialized"):
+		return "Cluster deprecated v1beta1 condition ControlPlaneInitialized"
+	case ptr.Deref(tcp.Status.Initialization.ControlPlaneInitialized, false):
+		return "TalosControlPlane status.initialization.controlPlaneInitialized"
+	case tcp.Status.Bootstrapped:
+		return "TalosControlPlane status.bootstrapped"
+	}
+	for i := range machines {
+		if machines[i].Status.NodeRef.IsDefined() {
+			return "Machine " + machines[i].Name + " has a NodeRef"
+		}
+	}
+	if len(machines) > 1 {
+		return fmt.Sprintf("%d control-plane Machines exist", len(machines))
+	}
+	return ""
+}
+
+func v1beta1ConditionTrue(conds clusterv1.Conditions, conditionType string) bool {
+	for i := range conds {
+		if string(conds[i].Type) == conditionType && conds[i].Status == corev1.ConditionTrue {
+			return true
+		}
+	}
+	return false
+}
+
+// hasEtcdMembers asks the node's etcd for its member list. A node whose etcd is not
+// running answers with an RPC error, which etcdNotRunning classifies; any member seen
+// means a cluster exists.
+func hasEtcdMembers(ctx context.Context, c *talosclient.Client) (bool, error) {
+	resp, err := c.EtcdMemberList(ctx, &machineapi.EtcdMemberListRequest{})
+	if err != nil {
+		return false, err
+	}
+	for _, message := range resp.GetMessages() {
+		if len(message.GetMembers()) > 0 {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+// isMissingPath reports the LS answer for a path that does not exist (Talos returns the
+// lstat error text of the missing root).
+func isMissingPath(err error) bool {
+	return talosclient.StatusCode(err) == codes.NotFound || strings.Contains(err.Error(), "no such file or directory")
+}
+
 func hasEtcdData(ctx context.Context, c *talosclient.Client) (bool, error) {
 	list, err := c.LS(ctx, &machineapi.ListRequest{Root: "/var/lib/etcd/member"})
 	if err != nil {
@@ -644,11 +843,15 @@ func (r *TalosControlPlaneReconciler) generateTalosConfig(ctx context.Context, t
 		BlockOwnerDeletion: ptr.To(true),
 	}
 
+	if tcp.UID == "" {
+		return nil, ownerError("initial control-plane UID")
+	}
 	bootstrapConfig := &cabptv1.TalosConfig{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:            name,
 			Namespace:       tcp.Namespace,
 			OwnerReferences: []metav1.OwnerReference{owner},
+			Annotations:     map[string]string{},
 		},
 		Spec: *spec,
 	}
@@ -667,6 +870,7 @@ func (r *TalosControlPlaneReconciler) generateTalosConfig(ctx context.Context, t
 }
 
 func (r *TalosControlPlaneReconciler) updateStatus(ctx context.Context, tcp *controlplanev1.TalosControlPlane, cluster *clusterv1.Cluster) error {
+	prepareVersionObservation(tcp)
 	clusterSelector := &metav1.LabelSelector{
 		MatchLabels: map[string]string{
 			clusterv1.ClusterNameLabel:         cluster.Name,
@@ -683,7 +887,7 @@ func (r *TalosControlPlaneReconciler) updateStatus(ctx context.Context, tcp *con
 	// This is necessary for CRDs including scale subresources.
 	tcp.Status.Selector = selector.String()
 
-	ownedMachines, err := r.getControlPlaneMachinesForCluster(ctx, util.ObjectKey(cluster))
+	ownedMachines, err := r.getControlPlaneMachinesForTCP(ctx, util.ObjectKey(cluster), tcp)
 	if err != nil {
 		return err
 	}
@@ -702,15 +906,37 @@ func (r *TalosControlPlaneReconciler) updateStatus(ctx context.Context, tcp *con
 		return nil
 	}
 
-	lowestVersion := nonDeletingMachines.LowestVersion()
-	if lowestVersion != "" {
-		tcp.Status.Version = &lowestVersion
+	privateHeld, privateErr := r.ownerUpdateHeld(ctx, tcp)
+	_, statusPlan, _ := r.readOwnerPlan(ctx, tcp)
+	var heldUID types.UID
+	if statusPlan != nil {
+		heldUID = statusPlan.Intent.Machine.UID
 	}
-
+	if privateHeld || privateErr != nil {
+		for i := range ownedMachines.Items {
+			machine := &ownedMachines.Items[i]
+			if heldUID != "" && machine.UID != heldUID {
+				continue
+			}
+			if !machine.DeletionTimestamp.IsZero() {
+				continue
+			}
+			helper, err := patch.NewHelper(machine, r.Client)
+			if err != nil {
+				return err
+			}
+			conditions.Set(machine, metav1.Condition{Type: clusterv1.MachineUpToDateCondition, Status: metav1.ConditionFalse, Reason: clusterv1.MachineUpToDateUpdatingReason, Message: "Private owner update completion is not verified"})
+			if err := helper.Patch(ctx, machine); err != nil {
+				return err
+			}
+		}
+	}
 	controlPlane, err := newControlPlane(ctx, r.Client, cluster, tcp, nonDeletingMachines)
 	if err != nil {
 		r.Log.Info("failed to compute updated replica status", "error", err)
 	} else {
+		controlPlane.updateHeld = privateHeld || privateErr != nil
+		controlPlane.updateMachine = heldUID
 
 		// Set the v1beta2 UpToDate condition on each owned control plane Machine.
 		// Core Machine controller skips UpToDate for stand-alone Machines, so the
@@ -745,11 +971,31 @@ func (r *TalosControlPlaneReconciler) updateStatus(ctx context.Context, tcp *con
 	tcp.Status.UpToDateReplicas = ptr.To(upToDateReplicas)
 	tcp.Status.ReadyReplicas = readyReplicas
 
+	if tcp.Spec.Kubeconfig.Mode == controlplanev1.KubeconfigModeExternal {
+		if _, err := r.reconcileExternalKubeconfig(ctx, cluster, tcp); err != nil {
+			conditions.Set(tcp, metav1.Condition{Type: string(controlplanev1.AvailableCondition), Status: metav1.ConditionFalse, Reason: "ExternalKubeconfigUnavailable", Message: "Externally managed kubeconfig is not valid or available"})
+			versionObservationFailed(tcp, "InspectionFailed", "External workload credentials cannot be validated")
+			return nil
+		}
+	}
+	updateHeld, _ := r.ownerUpdateHeld(ctx, tcp)
+	observedVersion := tcp.Status.Version
+	r.observeControlPlaneVersion(ctx, tcp, cluster, ownedMachines.Items)
+	if updateHeld {
+		tcp.Status.Version = observedVersion
+		versionObservationFailed(tcp, "Updating", "Private owner update completion is not verified")
+	}
+
 	// Probe workload cluster reachability to set Initialized + AvailableCondition. Failure here
 	// only suppresses the AvailableCondition; replica counters stay accurate.
 	c, err := r.ClusterCache.GetClient(ctx, util.ObjectKey(cluster))
 	if err != nil {
-		r.Log.Info("failed to get kubeconfig for the cluster", "error", err)
+		if tcp.Spec.Kubeconfig.Mode == controlplanev1.KubeconfigModeExternal {
+			conditions.Set(tcp, metav1.Condition{Type: string(controlplanev1.AvailableCondition), Status: metav1.ConditionFalse, Reason: "ExternalKubernetesAPIUnreachable", Message: "External kubeconfig cannot establish Kubernetes API reachability"})
+		}
+		if tcp.Spec.Kubeconfig.Mode != controlplanev1.KubeconfigModeExternal {
+			r.Log.Info("failed to get kubeconfig for the cluster", "error", err)
+		}
 
 		return nil
 	}
@@ -761,7 +1007,12 @@ func (r *TalosControlPlaneReconciler) updateStatus(ctx context.Context, tcp *con
 	}
 
 	if err := c.List(ctx, &corev1.NodeList{}, &client.ListOptions{LabelSelector: nodeSelector.Add(*req)}); err != nil {
-		r.Log.Info("failed to list controlplane nodes", "error", err)
+		if tcp.Spec.Kubeconfig.Mode == controlplanev1.KubeconfigModeExternal {
+			conditions.Set(tcp, metav1.Condition{Type: string(controlplanev1.AvailableCondition), Status: metav1.ConditionFalse, Reason: "ExternalKubernetesAPIUnreachable", Message: "External kubeconfig cannot establish Kubernetes API reachability"})
+		}
+		if tcp.Spec.Kubeconfig.Mode != controlplanev1.KubeconfigModeExternal {
+			r.Log.Info("failed to list controlplane nodes", "error", err)
+		}
 
 		return nil
 	}
@@ -806,6 +1057,9 @@ func (r *TalosControlPlaneReconciler) reconcileExternalReference(ctx context.Con
 }
 
 func (r *TalosControlPlaneReconciler) reconcileKubeconfig(ctx context.Context, cluster *clusterv1.Cluster, tcp *controlplanev1.TalosControlPlane, machines *clusterv1.MachineList) (ctrl.Result, error) {
+	if tcp.Spec.Kubeconfig.Mode == controlplanev1.KubeconfigModeExternal {
+		return r.reconcileExternalKubeconfig(ctx, cluster, tcp)
+	}
 	endpoint := cluster.Spec.ControlPlaneEndpoint
 	if endpoint.IsZero() {
 		return ctrl.Result{}, nil
@@ -933,7 +1187,61 @@ func (r *TalosControlPlaneReconciler) reconcileConditions(ctx context.Context, c
 		})
 	}
 
+	r.reconcileConfigDriftSummary(ctx, tcp, machines)
+
 	return ctrl.Result{}, nil
+}
+
+// configDriftConditionType is CABPT's report-only ConfigDrift condition on a TalosConfig.
+const configDriftConditionType = cabptv1.ConfigDriftCondition
+
+// reconcileConfigDriftSummary rolls the owned Machines' TalosConfig ConfigDrift conditions
+// up onto the TalosControlPlane: True names the drifted Machines and their differing
+// documents, False when every observed child reports no drift, Unknown while none has been
+// observed or any observation is pending. It is a summary only; nothing is applied.
+func (r *TalosControlPlaneReconciler) reconcileConfigDriftSummary(ctx context.Context, tcp *controlplanev1.TalosControlPlane, machines *clusterv1.MachineList) {
+	var drifted, pending []string
+	observed := 0
+	for i := range machines.Items {
+		machine := &machines.Items[i]
+		if !machine.DeletionTimestamp.IsZero() || !machine.Spec.Bootstrap.ConfigRef.IsDefined() || machine.Spec.Bootstrap.ConfigRef.Kind != "TalosConfig" {
+			continue
+		}
+		config := &cabptv1.TalosConfig{}
+		if r.Client.Get(ctx, client.ObjectKey{Namespace: machine.Namespace, Name: machine.Spec.Bootstrap.ConfigRef.Name}, config) != nil {
+			continue
+		}
+		condition := conditions.Get(config, configDriftConditionType)
+		if condition == nil {
+			continue
+		}
+		observed++
+		switch condition.Status {
+		case metav1.ConditionTrue:
+			drifted = append(drifted, machine.Name+": "+condition.Message)
+		case metav1.ConditionUnknown:
+			pending = append(pending, machine.Name)
+		}
+	}
+	summary := metav1.Condition{Type: configDriftConditionType, Status: metav1.ConditionFalse, Reason: "NoDrift"}
+	switch {
+	case len(drifted) > 0:
+		summary.Status = metav1.ConditionTrue
+		summary.Reason = "ConfigDrifted"
+		summary.Message = strings.Join(drifted, "; ")
+		if len(summary.Message) > 1024 {
+			summary.Message = summary.Message[:1024]
+		}
+	case observed == 0:
+		summary.Status = metav1.ConditionUnknown
+		summary.Reason = "ObservationPending"
+		summary.Message = "no control plane machine has been observed for drift yet"
+	case len(pending) > 0:
+		summary.Status = metav1.ConditionUnknown
+		summary.Reason = "ObservationPending"
+		summary.Message = "drift observation pending on: " + strings.Join(pending, ", ")
+	}
+	conditions.Set(tcp, summary)
 }
 
 func (r *TalosControlPlaneReconciler) reconcileMachineTemplateState(ctx context.Context, cluster *clusterv1.Cluster, tcp *controlplanev1.TalosControlPlane, machines *clusterv1.MachineList) error {
@@ -1004,7 +1312,25 @@ func (r *TalosControlPlaneReconciler) reconcileMachineTemplateState(ctx context.
 func (r *TalosControlPlaneReconciler) reconcileMachines(ctx context.Context, cluster *clusterv1.Cluster, tcp *controlplanev1.TalosControlPlane, machines *clusterv1.MachineList) (res ctrl.Result, err error) {
 	logger := r.Log.WithValues("namespace", tcp.Namespace, "talosControlPlane", tcp.Name)
 
-	// If we've made it this far, we can assume that all ownedMachines are up to date
+	// The owner's spec writes precede runtime completion. Hold every Machine
+	// mutation, including scaling and replacement, until the core executor clears
+	// both transaction annotations. This also covers zero outdated Machines.
+	updating := 0
+	for i := range machines.Items {
+		if isUpdatingInPlace(&machines.Items[i]) {
+			updating++
+		}
+	}
+	if updating > 0 {
+		logger.Info("waiting for in-place transaction completion", "transactions", updating)
+		conditions.Set(tcp, metav1.Condition{
+			Type:    string(controlplanev1.MachinesSpecUpToDateCondition),
+			Status:  metav1.ConditionFalse,
+			Reason:  controlplanev1.InPlaceUpdateInProgressReason,
+			Message: fmt.Sprintf("Waiting for %d in-place transactions to complete", updating),
+		})
+		return ctrl.Result{RequeueAfter: requeueDuration}, nil
+	}
 	numMachines := len(machines.Items)
 	desiredReplicas := int(tcp.Spec.GetReplicas())
 
@@ -1017,7 +1343,10 @@ func (r *TalosControlPlaneReconciler) reconcileMachines(ctx context.Context, clu
 		return ctrl.Result{}, err
 	}
 
-	outdated := controlPlane.MachinesNeedingRollout()
+	outdated, err := controlPlane.MachinesNeedingRollout()
+	if err != nil {
+		return ctrl.Result{}, err
+	}
 
 	// Offer outdated machines to the in-place update extension first. It claims the one it
 	// is updating and names the ones that have to be replaced; everything else waits. The
@@ -1034,8 +1363,9 @@ func (r *TalosControlPlaneReconciler) reconcileMachines(ctx context.Context, clu
 			Type:    string(controlplanev1.MachinesSpecUpToDateCondition),
 			Status:  metav1.ConditionFalse,
 			Reason:  controlplanev1.InPlaceUpdateInProgressReason,
-			Message: fmt.Sprintf("Updating %d replicas with outdated spec in place (%d replicas up to date)", len(outdated), len(controlPlane.Machines)-len(outdated)),
+			Message: fmt.Sprintf("Updating %d replicas in place (%d replicas have outdated specs)", len(decision.claimed), len(outdated)),
 		})
+		return ctrl.Result{RequeueAfter: requeueDuration}, nil
 	}
 
 	needRollout := decision.rollout
@@ -1084,7 +1414,7 @@ func (r *TalosControlPlaneReconciler) reconcileMachines(ctx context.Context, clu
 		return res, err
 	default:
 		if !tcp.Status.Bootstrapped {
-			if err := r.bootstrapCluster(ctx, tcp, machines.Items); err != nil {
+			if err := r.bootstrapCluster(ctx, cluster, tcp, machines.Items); err != nil {
 				conditions.Set(tcp, metav1.Condition{
 					Type:    string(controlplanev1.MachinesBootstrapped),
 					Status:  metav1.ConditionFalse,
@@ -1172,12 +1502,27 @@ func copyMachineReadinessGates(in []clusterv1.MachineReadinessGate) []clusterv1.
 	return out
 }
 
+// defaultNodeDeletionTimeoutSeconds mirrors core's Machine defaulting webhook
+// (core/webhooks/admission defaultNodeDeletionTimeoutSeconds, CAPI v1.14); importing that
+// package would pull its webhook dependencies into this provider.
+const defaultNodeDeletionTimeoutSeconds = int32(10)
+
+// buildMachineDeletionSpec renders the Machine deletion spec exactly as the API server stores
+// it: core's Machine defaulting webhook fills a nil NodeDeletionTimeoutSeconds with 10s. A nil
+// desired value never converged, so reconcileMachineTemplateState patched it every reconcile
+// and left the in-memory Machine (the patch helper does not read the response back) different
+// from the live one, which createOwnerPlan rejected as a changed CAN-approved snapshot.
 func buildMachineDeletionSpec(deletion controlplanev1.TalosControlPlaneMachineTemplateDeletionSpec) clusterv1.MachineDeletionSpec {
-	return clusterv1.MachineDeletionSpec{
+	out := clusterv1.MachineDeletionSpec{
 		NodeDrainTimeoutSeconds:        copyInt32Pointer(deletion.NodeDrainTimeoutSeconds),
 		NodeVolumeDetachTimeoutSeconds: copyInt32Pointer(deletion.NodeVolumeDetachTimeoutSeconds),
 		NodeDeletionTimeoutSeconds:     copyInt32Pointer(deletion.NodeDeletionTimeoutSeconds),
 	}
+	if out.NodeDeletionTimeoutSeconds == nil {
+		timeout := defaultNodeDeletionTimeoutSeconds
+		out.NodeDeletionTimeoutSeconds = &timeout
+	}
+	return out
 }
 
 func copyInt32Pointer(in *int32) *int32 {
@@ -1191,6 +1536,9 @@ func copyInt32Pointer(in *int32) *int32 {
 
 func patchTalosControlPlane(ctx context.Context, patchHelper *patch.Helper, tcp *controlplanev1.TalosControlPlane, opts ...patch.Option) error {
 	// Always update the readyCondition by summarizing the state of other conditions.
+	if tcp.Spec.Kubeconfig.Mode == controlplanev1.KubeconfigModeExternal && !conditions.IsTrue(tcp, controlplanev1.KubeconfigAvailableCondition) {
+		conditions.Set(tcp, metav1.Condition{Type: string(controlplanev1.AvailableCondition), Status: metav1.ConditionFalse, Reason: "ExternalKubeconfigUnavailable", Message: "Externally managed kubeconfig is not valid or available"})
+	}
 	if err := conditions.SetSummaryCondition(
 		tcp,
 		tcp,
@@ -1214,6 +1562,7 @@ func patchTalosControlPlane(ctx context.Context, patchHelper *patch.Helper, tcp 
 			string(controlplanev1.MachinesAllReadyCondition),
 			string(controlplanev1.AvailableCondition),
 			string(controlplanev1.MachinesBootstrapped),
+			controlplanev1.KubeconfigAvailableCondition,
 		}},
 	)
 

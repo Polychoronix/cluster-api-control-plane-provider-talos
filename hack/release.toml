@@ -2,8 +2,8 @@
 commit = "HEAD"
 
 project_name = "CAPI Control Plane Provider Talos"
-github_repo = "talos-systems/cluster-api-control-plane-provider-talos"
-match_deps = "^github.com/(talos-systems/[a-zA-Z0-9-]+)$"
+github_repo = "Polychoronix/cluster-api-control-plane-provider-talos"
+match_deps = "^github.com/(siderolabs/[a-zA-Z0-9-]+)$"
 
 # previous release
 previous = "v0.8.0"

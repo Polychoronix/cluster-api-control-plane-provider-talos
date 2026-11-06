@@ -59,6 +59,14 @@ func (r *TalosControlPlaneReconciler) preflightChecks(
 		return &preflightFailure{message: "waiting for machines to be deleted: " + strings.Join(names, ", ")}
 	}
 
+	// Unlike desired-spec matching, these annotations represent runtime completion.
+	// Check before excluding a scale-down victim: an updating victim cannot leave.
+	if updating := machines.Filter(isUpdatingInPlace); updating.Len() > 0 {
+		names := updating.Names()
+		sort.Strings(names)
+		return &preflightFailure{message: "waiting for in-place transactions to complete: " + strings.Join(names, ", ")}
+	}
+
 	excluded := map[string]struct{}{}
 
 	for _, machine := range excludeFor {

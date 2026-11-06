@@ -18,10 +18,72 @@ const (
 	// TalosControlPlaneFinalizerLegacy is kept temporarily so the controller can migrate
 	// existing objects away from the old non-path-qualified finalizer value.
 	TalosControlPlaneFinalizerLegacy = "talos.controlplane.cluster.x-k8s.io"
+
+	// MemberLabel names the declared control-plane member a Machine was created for.
+	// It is set on the Machine at creation and is how the member overlay is resolved later.
+	MemberLabel = "controlplane.cluster.x-k8s.io/member"
 )
 
 type ControlPlaneConfig struct {
 	ControlPlaneConfig cabptv1.TalosConfigSpec `json:"controlplane"`
+
+	// Members pins control-plane replicas to declared hosts. When set, Machines are created
+	// one per member in declared order, named after the member, labelled with MemberLabel,
+	// and their InfrastructureMachine selects the host through infrastructureSelector.
+	// Replicas may be lower than the number of members (step 1 -> 2 -> 3) but never higher.
+	// Member names are immutable once declared; their overlays follow the TalosConfig
+	// mutability rules of the bootstrap provider.
+	// +optional
+	// +listType=map
+	// +listMapKey=name
+	Members []ControlPlaneMember `json:"members,omitempty"`
+}
+
+// ControlPlaneMember is one declared, host-pinned control-plane replica.
+type ControlPlaneMember struct {
+	// Name is the Machine name used for this member. It must be a DNS label.
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=63
+	Name string `json:"name"`
+
+	// InfrastructureSelector is merged over the cloned InfrastructureMachine's
+	// spec.hostSelector.matchLabels so the infrastructure provider claims this member's host.
+	// +optional
+	InfrastructureSelector map[string]string `json:"infrastructureSelector,omitempty"`
+
+	// TalosConfigPatch is applied over the shared controlplane TalosConfigSpec for this
+	// member: patches and Secret references are appended, talosEndpoint replaces the shared one.
+	// +optional
+	TalosConfigPatch *ControlPlaneMemberPatch `json:"talosConfigPatch,omitempty"`
+}
+
+// ControlPlaneMemberPatch is the per-member subset of a TalosConfigSpec.
+type ControlPlaneMemberPatch struct {
+	// +optional
+	ConfigPatches []cabptv1.ConfigPatches `json:"configPatches,omitempty"`
+	// +optional
+	StrategicPatches []string `json:"strategicPatches,omitempty"`
+	// +optional
+	StrategicPatchSecretRefs []cabptv1.SecretKeyReference `json:"strategicPatchSecretRefs,omitempty"`
+	// +optional
+	TalosEndpoint *cabptv1.TalosEndpoint `json:"talosEndpoint,omitempty"`
+}
+
+// KubeconfigMode selects who owns the standard Cluster kubeconfig Secret.
+type KubeconfigMode string
+
+const (
+	KubeconfigModeManaged  KubeconfigMode = "Managed"
+	KubeconfigModeExternal KubeconfigMode = "External"
+)
+
+// KubeconfigSpec configures management of <cluster>-kubeconfig, key value.
+type KubeconfigSpec struct {
+	// External validates and consumes the Secret without writing, owning or
+	// rotating its credentials. Omitted mode retains Managed behavior.
+	// +optional
+	// +kubebuilder:validation:Enum=Managed;External
+	Mode KubeconfigMode `json:"mode,omitempty"`
 }
 
 // TalosControlPlaneMachineTemplate defines how control plane Machines should be shaped.
@@ -127,11 +189,20 @@ type TalosControlPlaneSpec struct {
 	// to use for initializing and joining machines to the control plane.
 	ControlPlaneConfig ControlPlaneConfig `json:"controlPlaneConfig"`
 
+	// Manage consents to activation after observing all owned control-plane Machines.
+	// +optional
+	// +kubebuilder:default=false
+	Manage bool `json:"manage,omitempty"`
+
 	// The RolloutStrategy to use to replace control plane machines with
 	// new ones.
 	// +optional
 	// +kubebuilder:default={type: "RollingUpdate", rollingUpdate: {maxSurge: 1}}
 	RolloutStrategy *RolloutStrategy `json:"rolloutStrategy,omitempty"`
+
+	// Kubeconfig selects provider-managed or externally managed Kubernetes access.
+	// +optional
+	Kubeconfig KubeconfigSpec `json:"kubeconfig,omitempty,omitzero"`
 }
 
 // GetReplicas reads spec replicas in a safe way.
@@ -216,8 +287,10 @@ type TalosControlPlaneStatus struct {
 	// +optional
 	UpToDateReplicas *int32 `json:"upToDateReplicas,omitempty"`
 
-	// version represents the minimum Kubernetes version for the control plane machines
-	// in the cluster.
+	// Version is the minimum observed running API-server image version across
+	// all associated control-plane Machines after pending updates complete.
+	// VersionObserved records observation provenance; transient failures retain
+	// only a previously observed value, never desired Machine versions.
 	// +optional
 	Version *string `json:"version,omitempty"`
 
