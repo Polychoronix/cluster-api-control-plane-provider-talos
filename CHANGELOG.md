@@ -1,3 +1,9 @@
+## Unreleased — v0.9.0-craci.12
+
+### Changes
+
+* Vendor CABPT v0.9.0-craci.12 (`CABPT_VERSION`). CABPT's `UpdateMachine` executor now settles an `Ambiguous` in-place journal by observing the node instead of always demanding intervention: the requested configuration live (order-insensitive document comparison) completes it as `Observed` with its receipt once recovery holds, so this provider's owner plan proceeds through its normal receipt-consumption path; a never-acknowledged apply whose node still runs the planned-time configuration is discarded and re-planned; anything else stays `Ambiguous` with the reason. In process, this provider reads the same journals (`op.ReadJournal`/`ReadReceipt` on the owner plan path), which now carry an optional `baselineDigest` field; owner-plan handling is unchanged. The in-place completion comparison (`ConfigurationDiff`) is order-insensitive for every consumer.
+
 ## Unreleased — v0.9.0-craci.11
 
 ### Changes
