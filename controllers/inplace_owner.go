@@ -572,10 +572,24 @@ func (r *TalosControlPlaneReconciler) resumeOwnerPlan(ctx context.Context, tcp *
 			return true, err
 		}
 	}
-	if err := r.Client.Delete(ctx, secret, client.Preconditions{UID: &secret.UID, ResourceVersion: &secret.ResourceVersion}); err != nil {
-		return true, ownerError("Consumed plan deletion")
+	return consumedPlanDeletion(r.Client.Delete(ctx, secret, client.Preconditions{UID: &secret.UID, ResourceVersion: &secret.ResourceVersion}))
+}
+
+// consumedPlanDeletion classifies the last step of a transaction. The plan is Consumed:
+// the receipt is consumed and the plan reference detached, so deleting the Secret is
+// only cleanup, retried on every reconcile with a fresh read. Gone already is success;
+// a missing delete permission says so instead of asking for intervention on the plan.
+func consumedPlanDeletion(err error) (bool, error) {
+	switch {
+	case err == nil || apierrors.IsNotFound(err):
+		return false, nil
+	case apierrors.IsForbidden(err):
+		return true, fmt.Errorf("control-plane update Consumed plan deletion forbidden: the controller's role needs the delete verb on secrets")
+	case apierrors.IsConflict(err):
+		return true, fmt.Errorf("control-plane update Consumed plan changed before deletion; retrying with a fresh read")
+	default:
+		return true, fmt.Errorf("control-plane update Consumed plan deletion failed (%s); retrying", apierrors.ReasonForError(err))
 	}
-	return false, nil
 }
 
 // ownerUpdateHeld is also used independently by deferred status reconciliation.

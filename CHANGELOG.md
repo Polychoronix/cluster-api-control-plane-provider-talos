@@ -1,3 +1,9 @@
+## Unreleased — v0.9.0-craci.13
+
+### Changes
+
+* **Fix: every in-place update ended with `control-plane update Consumed plan deletion failed; intervention required`.** The last step of an owner transaction deletes its `tcp-<uid>-inplace` plan Secret, but the manager role (`config/rbac/role.yaml`, kubebuilder marker in `taloscontrolplane_controller.go`) never granted `delete` on secrets; envtest and the fake client do not enforce RBAC, so no test saw it. The plan stayed `Consumed`, the reconciler held every Machine change behind it, and the updated Machine reported `UpToDate=False/Updating`. The role now grants `delete` on secrets (a test pins it), and a failed deletion is classified: already gone is success, `Forbidden` names the missing verb, a conflict or other failure is retried with a fresh read on the next reconcile, none of them "intervention required" — the plan is Consumed, so deleting it is only cleanup.
+
 ## Unreleased — v0.9.0-craci.12
 
 ### Changes
